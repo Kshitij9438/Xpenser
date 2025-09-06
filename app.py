@@ -244,3 +244,9 @@ async def process_request(request: UserRequest):
             request_counters["errors"] += 1
         logger.exception("[GENERAL ERROR] user_id=%s", getattr(request, "user_id", None))
         raise HTTPException(status_code=500, detail=str(e) if DEBUG else "An unexpected error occurred")
+import os
+import uvicorn
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))  # Railway sets PORT; fallback to 8000 locally
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
