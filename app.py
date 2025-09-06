@@ -248,5 +248,6 @@ import os
 import uvicorn
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))  # Railway sets PORT; fallback to 8000 locally
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
+    # Read PORT from environment; default to 8000
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, workers=1)
