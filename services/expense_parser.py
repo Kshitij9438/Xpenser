@@ -1,4 +1,5 @@
 from agents.expense_agent import parse_and_generate_message
+import logging
 
 async def parse_expense(user_input: str):
     """
@@ -12,3 +13,4 @@ async def parse_expense(user_input: str):
         return result.output
     else:
         return result  # Fallback for unexpected cases
+    
