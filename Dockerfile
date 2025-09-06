@@ -36,8 +36,13 @@ RUN chmod +x start.sh
 RUN useradd --create-home --shell /bin/bash app \
     && chown -R app:app /app
 
-# Ensure cache directory exists and set proper permissions
-RUN mkdir -p /root/.cache && chown -R app:app /root/.cache
+# Fix Prisma cache permissions - ensure all cache directories are accessible
+RUN mkdir -p /root/.cache && \
+    chown -R app:app /root/.cache && \
+    chmod -R 755 /root/.cache
+
+# Also ensure any Prisma-generated files are accessible
+RUN find /usr/local/lib/python3.11/site-packages -name "*prisma*" -type d -exec chown -R app:app {} \; 2>/dev/null || true
 
 # Switch to non-root user
 USER app
