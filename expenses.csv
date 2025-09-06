@@ -1,0 +1,10 @@
+id,amount,category,subcategory,date,paymentMethod,description,companions,createdAt
+3d9277a4-0d34-42a4-93a8-bd6581ede4d3,1718.0,health,gym,2025-05-06T07:59:15.282000+00:00,card,Snack time,['Kiran'],2025-09-04T23:52:37.420000+00:00
+24f0ad56-335b-4715-a446-3ef4f82322de,1943.0,health,gym,2025-05-18T13:10:45.806000+00:00,upi,Lunch with colleagues,[],2025-09-04T23:52:38.054000+00:00
+9347cb61-b66e-4757-943f-cae3be8844a4,287.0,health,medicine,2025-09-04T05:22:58.115000+00:00,wallet,Gym membership,"['Kavya', 'Rekha']",2025-09-04T23:52:38.054000+00:00
+145fe3fd-268f-4aca-bdbf-7b64e56213b7,222.0,health,gym,2025-03-29T14:46:28.920000+00:00,wallet,Online shopping,"['Anjali', 'Manoj']",2025-09-04T23:52:38.545000+00:00
+566729ba-6262-4170-80d8-d59420211506,467.0,health,doctor,2025-04-07T02:42:28.889000+00:00,upi,Gym membership,"['Anjali', 'Kavya']",2025-09-04T23:52:38.545000+00:00
+67b9690f-4daa-4faf-bebe-1601e6c372dc,1369.0,health,medicine,2025-06-26T17:51:17.861000+00:00,card,Movie tickets,['Nisha'],2025-09-04T23:52:39.017000+00:00
+d04335d2-6c7d-4681-82f1-742fcc678b3f,680.0,health,doctor,2025-04-19T08:17:00.334000+00:00,netbanking,Snack time,"['Meera', 'Suresh', 'Ravi']",2025-09-04T23:52:39.017000+00:00
+08895fc6-3a02-40dd-ac9d-32eaad0b2e6c,1510.0,health,medicine,2025-06-20T16:00:57.623000+00:00,card,Taxi ride,"['Anjali', 'Sneha', 'Raj']",2025-09-04T23:52:39.017000+00:00
+a06c89c3-7767-4706-96bc-95dada44d8ea,1666.0,health,supplements,2025-03-06T15:46:54.300000+00:00,wallet,Gym membership,"['Kavya', 'Nisha']",2025-09-04T23:52:39.500000+00:00

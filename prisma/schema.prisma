@@ -1,0 +1,76 @@
+generator client {
+  provider                    = "prisma-client-py"
+  enable_experimental_decimal = "true"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String              @id
+  email              String              @unique
+  password           String?
+  googleId           String?             @unique
+  profilePicture     String?
+  telegramChatId     String?             @unique
+  telegramLinkCode   String?
+  telegramLinkExpiry DateTime?
+  createdAt          DateTime            @default(now())
+  ConversationState  ConversationState[]
+  Expense            Expense[]
+  Message            Message[]
+}
+
+model ConversationState {
+  id      Int    @id @default(autoincrement())
+  type    String
+  payload Json
+  user_id String
+  User    User   @relation(fields: [user_id], references: [id])
+
+  @@unique([user_id, type])
+}
+
+model Expense {
+  id            String    @id
+  amount        Decimal   @db.Decimal(14, 2)
+  category      String
+  subcategory   String?
+  date          DateTime
+  paymentMethod String?
+  description   String?
+  createdAt     DateTime  @default(now())
+  companions    String[]
+  user_id       String
+  User          User      @relation(fields: [user_id], references: [id])
+  Message       Message[]
+}
+
+model Message {
+  id           String   @id
+  sender       Sender
+  source       Source
+  content      String
+  createdAt    DateTime @default(now())
+  extMessageId String?
+  extChatId    String?
+  expenseId    String?
+  user_id      String
+  Expense      Expense? @relation(fields: [expenseId], references: [id])
+  User         User     @relation(fields: [user_id], references: [id])
+
+  @@unique([source, extChatId, extMessageId])
+  @@index([user_id, createdAt])
+}
+
+enum Sender {
+  user
+  ai
+}
+
+enum Source {
+  web
+  telegram
+}

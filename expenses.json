@@ -1,0 +1,125 @@
+[
+  {
+    "id": "3d9277a4-0d34-42a4-93a8-bd6581ede4d3",
+    "amount": 1718.0,
+    "category": "health",
+    "subcategory": "gym",
+    "date": "2025-05-06T07:59:15.282000+00:00",
+    "paymentMethod": "card",
+    "description": "Snack time",
+    "companions": [
+      "Kiran"
+    ],
+    "createdAt": "2025-09-04T23:52:37.420000+00:00"
+  },
+  {
+    "id": "24f0ad56-335b-4715-a446-3ef4f82322de",
+    "amount": 1943.0,
+    "category": "health",
+    "subcategory": "gym",
+    "date": "2025-05-18T13:10:45.806000+00:00",
+    "paymentMethod": "upi",
+    "description": "Lunch with colleagues",
+    "companions": [],
+    "createdAt": "2025-09-04T23:52:38.054000+00:00"
+  },
+  {
+    "id": "9347cb61-b66e-4757-943f-cae3be8844a4",
+    "amount": 287.0,
+    "category": "health",
+    "subcategory": "medicine",
+    "date": "2025-09-04T05:22:58.115000+00:00",
+    "paymentMethod": "wallet",
+    "description": "Gym membership",
+    "companions": [
+      "Kavya",
+      "Rekha"
+    ],
+    "createdAt": "2025-09-04T23:52:38.054000+00:00"
+  },
+  {
+    "id": "145fe3fd-268f-4aca-bdbf-7b64e56213b7",
+    "amount": 222.0,
+    "category": "health",
+    "subcategory": "gym",
+    "date": "2025-03-29T14:46:28.920000+00:00",
+    "paymentMethod": "wallet",
+    "description": "Online shopping",
+    "companions": [
+      "Anjali",
+      "Manoj"
+    ],
+    "createdAt": "2025-09-04T23:52:38.545000+00:00"
+  },
+  {
+    "id": "566729ba-6262-4170-80d8-d59420211506",
+    "amount": 467.0,
+    "category": "health",
+    "subcategory": "doctor",
+    "date": "2025-04-07T02:42:28.889000+00:00",
+    "paymentMethod": "upi",
+    "description": "Gym membership",
+    "companions": [
+      "Anjali",
+      "Kavya"
+    ],
+    "createdAt": "2025-09-04T23:52:38.545000+00:00"
+  },
+  {
+    "id": "67b9690f-4daa-4faf-bebe-1601e6c372dc",
+    "amount": 1369.0,
+    "category": "health",
+    "subcategory": "medicine",
+    "date": "2025-06-26T17:51:17.861000+00:00",
+    "paymentMethod": "card",
+    "description": "Movie tickets",
+    "companions": [
+      "Nisha"
+    ],
+    "createdAt": "2025-09-04T23:52:39.017000+00:00"
+  },
+  {
+    "id": "d04335d2-6c7d-4681-82f1-742fcc678b3f",
+    "amount": 680.0,
+    "category": "health",
+    "subcategory": "doctor",
+    "date": "2025-04-19T08:17:00.334000+00:00",
+    "paymentMethod": "netbanking",
+    "description": "Snack time",
+    "companions": [
+      "Meera",
+      "Suresh",
+      "Ravi"
+    ],
+    "createdAt": "2025-09-04T23:52:39.017000+00:00"
+  },
+  {
+    "id": "08895fc6-3a02-40dd-ac9d-32eaad0b2e6c",
+    "amount": 1510.0,
+    "category": "health",
+    "subcategory": "medicine",
+    "date": "2025-06-20T16:00:57.623000+00:00",
+    "paymentMethod": "card",
+    "description": "Taxi ride",
+    "companions": [
+      "Anjali",
+      "Sneha",
+      "Raj"
+    ],
+    "createdAt": "2025-09-04T23:52:39.017000+00:00"
+  },
+  {
+    "id": "a06c89c3-7767-4706-96bc-95dada44d8ea",
+    "amount": 1666.0,
+    "category": "health",
+    "subcategory": "supplements",
+    "date": "2025-03-06T15:46:54.300000+00:00",
+    "paymentMethod": "wallet",
+    "description": "Gym membership",
+    "companions": [
+      "Kavya",
+      "Nisha"
+    ],
+    "createdAt": "2025-09-04T23:52:39.500000+00:00"
+  }
+]
