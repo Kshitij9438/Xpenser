@@ -34,7 +34,10 @@ RUN chmod +x start.sh
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash app \
-    && chown -R app:app /app
+    && chown -R app:app /app \
+    && chown -R app:app /root/.cache
+
+# Switch to non-root user
 USER app
 
 # Expose port (Railway will override this)
