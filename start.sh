@@ -1,9 +1,12 @@
-#!/bin/sh
+#!/bin/bash
 
 # Exit on any error
 set -e
 
 echo "🚀 Starting Expense Chatbot..."
+
+# Set default port if not provided
+PORT=${PORT:-8000}
 
 # Wait for database to be ready (if using external DB)
 if [ -n "$DATABASE_URL" ]; then
@@ -22,5 +25,5 @@ if [ -n "$DATABASE_URL" ]; then
 fi
 
 # Start the application
-echo "🌟 Starting FastAPI server..."
-exec python app.py
+echo "🌟 Starting FastAPI server on port $PORT..."
+exec uvicorn app:app --host 0.0.0.0 --port $PORT
