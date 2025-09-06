@@ -45,4 +45,5 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
 RUN chmod +x start.sh
 
 # Start the application
-CMD ["./start.sh"]
+CMD ["python", "app.py"]
+
