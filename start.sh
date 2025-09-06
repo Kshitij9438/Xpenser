@@ -14,10 +14,6 @@ if [ -n "$DATABASE_URL" ]; then
     # You can add database health check here if needed
 fi
 
-# Generate Prisma client if needed
-echo "🔧 Generating Prisma client..."
-prisma generate
-
 # Run database migrations (if any)
 if [ -n "$DATABASE_URL" ]; then
     echo "🗄️ Running database migrations..."
