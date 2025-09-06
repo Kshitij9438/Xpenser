@@ -12,7 +12,6 @@ from services.expense_parser import parse_expense
 from services.router import get_route
 from services.query_orchestrator import handle_user_query
 from prisma import Prisma
-from services.date_resolver import resolve_expression, get_today
 from services.utils import deep_serialize
 
 # -----------------------------
@@ -104,30 +103,6 @@ async def shutdown():
         logger.info("DB not connected; skipping disconnect")
 
 # -----------------------------
-# Utility: Date Replacement
-# -----------------------------
-def resolve_relative_dates(text: str, date_info: Dict[str, str]) -> str:
-    """
-    Replace relative date expressions with concrete ISO dates
-    """
-    if not date_info:
-        return text
-
-    replacements = {
-        r"\btoday\b": date_info["start_date"],
-        r"\byesterday\b": date_info["start_date"],
-        r"\bthis week\b": f"{date_info['start_date']} to {date_info['end_date']}",
-        r"\blast week\b": f"{date_info['start_date']} to {date_info['end_date']}",
-        r"\bthis month\b": f"{date_info['start_date']} to {date_info['end_date']}",
-        r"\blast month\b": f"{date_info['start_date']} to {date_info['end_date']}",
-    }
-
-    processed = text
-    for pattern, replacement in replacements.items():
-        processed = re.sub(pattern, replacement, processed, flags=re.IGNORECASE)
-    return processed
-
-# -----------------------------
 # API Endpoints
 # -----------------------------
 @app.get("/")
@@ -154,44 +129,47 @@ async def process_request(request: UserRequest):
         request_counters["total"] += 1
 
     try:
-        route_result = await get_route(request.text)
-        route = route_result.route
-        logger.info(f"[ROUTING] user_id={request.user_id}, route={route}, text='{request.text}'")
-
-        # Resolve relative dates
-        date_info = resolve_expression(request.text)
-        processed_text = resolve_relative_dates(request.text, date_info)
-        if date_info is None:
-            today_str = get_today().isoformat()
-            date_info = {"start_date": today_str, "end_date": today_str}
+        # Enhanced logging for debugging
+        logger.info(f"[REQUEST_START] user_id={request.user_id}, text_length={len(request.text)}")
+        
+        # Step 1: Route the request
+        try:
+            route_result = await get_route(request.text)
+            route = route_result.route
+            logger.info(f"[ROUTING] user_id={request.user_id}, route={route}, text='{request.text[:100]}...'")
+        except Exception as e:
+            logger.exception(f"[ROUTING_ERROR] user_id={request.user_id}, error={str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to route request")
 
         # -----------------
         # Expense Flow
         # -----------------
         if route == 1:
             try:
+                logger.info(f"[EXPENSE_START] user_id={request.user_id}")
                 # Wrap LLM call with timeout
                 try:
-                    result = await wait_for(parse_expense(processed_text), timeout=30)
+                    result = await wait_for(parse_expense(request.text), timeout=30)
                 except TimeoutError:
+                    logger.error(f"[EXPENSE_TIMEOUT] user_id={request.user_id}")
                     raise HTTPException(status_code=504, detail="Expense parsing timed out")
 
                 expense_data = result.get("expense_data") or {}
-                if "date" in expense_data:
-                    expense_data["date"] = date_info["start_date"]
                 user_message = result.get("user_message")
                 expense_json = deep_serialize(expense_data)
 
                 async with metrics_lock:
                     request_counters["expense"] += 1
 
-                logger.info(f"[EXPENSE PARSED] user_id={request.user_id}, expense={expense_json}")
+                logger.info(f"[EXPENSE_PARSED] user_id={request.user_id}, expense={expense_json}")
                 return {"type": "expense", "data": expense_json, "message": user_message}
 
+            except HTTPException:
+                raise
             except Exception as e:
                 async with metrics_lock:
                     request_counters["errors"] += 1
-                logger.exception("[EXPENSE ERROR] user_id=%s", request.user_id)
+                logger.exception(f"[EXPENSE_ERROR] user_id={request.user_id}, error={str(e)}")
                 raise HTTPException(status_code=500, detail=str(e) if DEBUG else "Expense parsing failed")
 
         # -----------------
@@ -199,16 +177,18 @@ async def process_request(request: UserRequest):
         # -----------------
         elif route == 2:
             if not DB_CONNECTED:
-                logger.warning("[QUERY BLOCKED] DB not connected; user_id=%s", request.user_id)
+                logger.warning(f"[QUERY_BLOCKED] DB not connected; user_id={request.user_id}")
                 raise HTTPException(status_code=503, detail="Query temporarily unavailable")
 
             try:
+                logger.info(f"[QUERY_START] user_id={request.user_id}")
                 try:
                     final_answer = await wait_for(
-                        handle_user_query(processed_text, request.user_id, db, context={"date_info": date_info}),
+                        handle_user_query(request.text, request.user_id, db),
                         timeout=45
                     )
                 except TimeoutError:
+                    logger.error(f"[QUERY_TIMEOUT] user_id={request.user_id}")
                     raise HTTPException(status_code=504, detail="Query processing timed out")
 
                 answer_data = deep_serialize(final_answer)
@@ -217,7 +197,7 @@ async def process_request(request: UserRequest):
                     request_counters["query"] += 1
 
                 preview = getattr(final_answer, "answer", "")
-                logger.info(f"[QUERY ANSWER] user_id={request.user_id}, preview='{preview[:120]}'")
+                logger.info(f"[QUERY_ANSWER] user_id={request.user_id}, preview='{preview[:120]}'")
                 return {"type": "query", "data": answer_data, "message": preview}
 
             except HTTPException:
@@ -225,7 +205,7 @@ async def process_request(request: UserRequest):
             except Exception as e:
                 async with metrics_lock:
                     request_counters["errors"] += 1
-                logger.exception("[QUERY ERROR] user_id=%s", request.user_id)
+                logger.exception(f"[QUERY_ERROR] user_id={request.user_id}, error={str(e)}")
                 raise HTTPException(status_code=500, detail=str(e) if DEBUG else "Query processing failed")
 
         # -----------------
@@ -234,7 +214,7 @@ async def process_request(request: UserRequest):
         else:
             async with metrics_lock:
                 request_counters["unknown"] += 1
-            logger.info(f"[UNKNOWN INPUT] user_id={request.user_id}, text='{request.text}'")
+            logger.info(f"[UNKNOWN_INPUT] user_id={request.user_id}, text='{request.text[:100]}...'")
             return {"type": "unknown", "message": "Input does not relate to expenses."}
 
     except HTTPException:
@@ -242,8 +222,9 @@ async def process_request(request: UserRequest):
     except Exception as e:
         async with metrics_lock:
             request_counters["errors"] += 1
-        logger.exception("[GENERAL ERROR] user_id=%s", getattr(request, "user_id", None))
+        logger.exception(f"[GENERAL_ERROR] user_id={getattr(request, 'user_id', None)}, error={str(e)}")
         raise HTTPException(status_code=500, detail=str(e) if DEBUG else "An unexpected error occurred")
+
 import os
 import uvicorn
 

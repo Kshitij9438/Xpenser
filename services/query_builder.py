@@ -1,11 +1,6 @@
 # FILE: services/query_builder.py
 """
-Query Builder & Data Fetcher
-
-- Converts QueryRequest -> Prisma queries
-- Handles numeric aggregation, count, sum, avg, min, max
-- Handles group_by with Python-side aggregation (prisma-client-py lacks group_by)
-- Returns QueryResult (rows, aggregate_result, meta)
+Query Builder & Data Fetcher with enhanced logging
 """
 
 import logging
@@ -41,14 +36,20 @@ def _build_where_from_filters(filters: QueryFilters, user_id: str) -> Dict[str, 
     Handles array fields (companions), numeric ranges, and date ranges.
     """
     where: Dict[str, Any] = {"user_id": user_id}
+    
+    print(f"[QUERY_BUILDER] Building where clause for user_id: {user_id}")
+    print(f"[QUERY_BUILDER] Filters: {filters}")
 
     # -------- String fields: use Prisma "mode: insensitive" --------
     if getattr(filters, "category", None):
         where["category"] = {"equals": filters.category, "mode": "insensitive"}
+        print(f"[QUERY_BUILDER] Added category filter: {filters.category}")
     if getattr(filters, "subcategory", None):
         where["subcategory"] = {"equals": filters.subcategory, "mode": "insensitive"}
+        print(f"[QUERY_BUILDER] Added subcategory filter: {filters.subcategory}")
     if getattr(filters, "paymentMethod", None):
         where["paymentMethod"] = {"equals": filters.paymentMethod, "mode": "insensitive"}
+        print(f"[QUERY_BUILDER] Added payment method filter: {filters.paymentMethod}")
 
     # -------- Array field: companions --------
     companions = getattr(filters, "companions", None)
@@ -59,27 +60,37 @@ def _build_where_from_filters(filters: QueryFilters, user_id: str) -> Dict[str, 
             where["companions"] = {"has_some": lc_companions} if len(lc_companions) > 1 else {"has": lc_companions[0]}
         else:
             where["companions"] = {"has": companions.lower()}
+        print(f"[QUERY_BUILDER] Added companions filter: {companions}")
 
     # -------- Numeric filters: amount --------
     amt_filter: Dict[str, Any] = {}
     if getattr(filters, "min_amount", None) is not None:
         amt_filter["gte"] = filters.min_amount
+        print(f"[QUERY_BUILDER] Added min_amount filter: {filters.min_amount}")
     if getattr(filters, "max_amount", None) is not None:
         amt_filter["lte"] = filters.max_amount
+        print(f"[QUERY_BUILDER] Added max_amount filter: {filters.max_amount}")
     if amt_filter:
         where["amount"] = amt_filter
 
     # -------- Date range filters --------
     dr = getattr(filters, "date_range", None)
     if dr:
+        print(f"[QUERY_BUILDER] Processing date range: {dr}")
         date_cond: Dict[str, Any] = {}
         if getattr(dr, "start", None):
-            date_cond["gte"] = _parse_iso_date(dr.start)
+            start_date = _parse_iso_date(dr.start)
+            date_cond["gte"] = start_date
+            print(f"[QUERY_BUILDER] Added start date filter: {start_date}")
         if getattr(dr, "end", None):
-            date_cond["lte"] = _parse_iso_date(dr.end)
+            end_date = _parse_iso_date(dr.end)
+            date_cond["lte"] = end_date
+            print(f"[QUERY_BUILDER] Added end date filter: {end_date}")
         if date_cond:
             where["date"] = date_cond
+            print(f"[QUERY_BUILDER] Final date condition: {date_cond}")
 
+    print(f"[QUERY_BUILDER] Final where clause: {where}")
     return where
 # -----------------------------
 # Helper: extract Decimal list
