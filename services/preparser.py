@@ -80,9 +80,13 @@ def extract_amounts(text: str) -> List[float]:
 def _parse_date_fallback(day: int, month_name: str, year: int) -> Optional[Dict[str, str]]:
     """Fallback date parsing without dateparser"""
     try:
-        month_num = MONTH_NAMES.get(month_name.lower())
-        if not month_num:
-            return None
+        # Handle both month names and month numbers
+        if month_name.isdigit():
+            month_num = int(month_name)
+        else:
+            month_num = MONTH_NAMES.get(month_name.lower())
+            if not month_num:
+                return None
         
         # Create date object
         date_obj = datetime(year, month_num, day)
@@ -96,10 +100,10 @@ def _parse_date_fallback(day: int, month_name: str, year: int) -> Optional[Dict[
 # Enhanced date heuristics with fallback
 def extract_date_range(text: str) -> Optional[Dict[str, str]]:
     text_lower = text.lower()
+    today = NOW
 
     # common relative phrases
     if "last month" in text_lower:
-        today = NOW
         first_of_this_month = today.replace(day=1)
         last_month_end = first_of_this_month - timedelta(days=1)
         last_month_start = last_month_end.replace(day=1)
@@ -120,15 +124,34 @@ def extract_date_range(text: str) -> Optional[Dict[str, str]]:
         d = (NOW.date() - timedelta(days=1)).strftime("%Y-%m-%d")
         return {"start": d, "end": d}
 
+    if "this week" in text_lower:
+        start = today - timedelta(days=today.weekday())  # Monday
+        end = start + timedelta(days=6)  # Sunday
+        return {"start": start.strftime("%Y-%m-%d"), "end": min(end, today).strftime("%Y-%m-%d")}
+
+    if "last week" in text_lower:
+        end = today - timedelta(days=today.weekday() + 1)
+        start = end - timedelta(days=6)
+        return {"start": start.strftime("%Y-%m-%d"), "end": end.strftime("%Y-%m-%d")}
+
     # Enhanced patterns for specific dates
     specific_date_patterns = [
-        r'(\d{1,2})[st|nd|rd|th]?\s+of\s+(\w+)\s+(\d{4})',  # "8th of April 2025"
+        r'(\d{1,2})(?:st|nd|rd|th)?\s+of\s+(\w+)\s+(\d{4})',  # "8th of April 2025"
         r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})',  # "8/4/2025" or "8-4-2025"
-        r'(\w+)\s+(\d{1,2})[st|nd|rd|th]?[,\s]*(\d{4})',  # "April 8th, 2025"
-        r'(\d{1,2})[st|nd|rd|th]?\s+(\w+)\s+(\d{4})',  # "8th April 2025"
+        r'(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?[,\s]*(\d{4})',  # "April 8th, 2025"
+        r'(\d{1,2})(?:st|nd|rd|th)?\s+(\w+)\s+(\d{4})',  # "8th April 2025"
     ]
     
-    for pattern in specific_date_patterns:
+    # Additional patterns for different date formats
+    additional_patterns = [
+        r'(\w+)\s+(\d{1,2})(?:st|nd|rd|th)?\s+(\d{4})',  # "August 8th 2025"
+        r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})',  # "8/4/25" or "8-4-25"
+    ]
+    
+    # Combine all patterns
+    all_patterns = specific_date_patterns + additional_patterns
+    
+    for pattern in all_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             if HAS_DATEPARSER:
@@ -144,9 +167,32 @@ def extract_date_range(text: str) -> Optional[Dict[str, str]]:
                 groups = match.groups()
                 if len(groups) >= 3:
                     try:
-                        day = int(groups[0])
-                        month_name = groups[1]
-                        year = int(groups[2])
+                        # Handle different group orders based on pattern
+                        if pattern in specific_date_patterns[:2]:  # "8th of April" or "8/4/2025"
+                            day = int(groups[0])
+                            month_name = groups[1]
+                            year = int(groups[2])
+                        elif pattern in specific_date_patterns[2:4]:  # "April 8th" or "8th April"
+                            if groups[0].isdigit():  # "8th April"
+                                day = int(groups[0])
+                                month_name = groups[1]
+                                year = int(groups[2])
+                            else:  # "April 8th"
+                                month_name = groups[0]
+                                day = int(groups[1])
+                                year = int(groups[2])
+                        else:  # additional patterns
+                            if groups[0].isdigit():  # "8/4/25"
+                                day = int(groups[0])
+                                month_name = str(int(groups[1]))  # Convert month number to string
+                                year = int(groups[2])
+                                if year < 100:  # Handle 2-digit years
+                                    year += 2000 if year < 50 else 1900
+                            else:  # "August 8th 2025"
+                                month_name = groups[0]
+                                day = int(groups[1])
+                                year = int(groups[2])
+                        
                         result = _parse_date_fallback(day, month_name, year)
                         if result:
                             return result
@@ -156,11 +202,50 @@ def extract_date_range(text: str) -> Optional[Dict[str, str]]:
     # patterns like "from X to Y" or "between X and Y"
     between_re = re.compile(r'(?:from|between)\s+([A-Za-z0-9,\s/-]+?)\s+(?:to|and)\s+([A-Za-z0-9,\s/-]+)', re.IGNORECASE)
     m = between_re.search(text)
-    if m and HAS_DATEPARSER:
-        s = dateparser.parse(m.group(1))
-        e = dateparser.parse(m.group(2))
-        if s and e:
-            return {"start": s.date().strftime("%Y-%m-%d"), "end": e.date().strftime("%Y-%m-%d")}
+    if m:
+        if HAS_DATEPARSER:
+            s = dateparser.parse(m.group(1))
+            e = dateparser.parse(m.group(2))
+            if s and e:
+                return {"start": s.date().strftime("%Y-%m-%d"), "end": e.date().strftime("%Y-%m-%d")}
+        else:
+            # Try to parse with our specific patterns
+            start_text = m.group(1).strip()
+            end_text = m.group(2).strip()
+            
+            # Try to match each part with our specific patterns
+            start_date = None
+            end_date = None
+            
+            for pattern in specific_date_patterns:
+                start_match = re.search(pattern, start_text, re.IGNORECASE)
+                if start_match and len(start_match.groups()) >= 3:
+                    try:
+                        day = int(start_match.groups()[0])
+                        month_name = start_match.groups()[1]
+                        year = int(start_match.groups()[2])
+                        result = _parse_date_fallback(day, month_name, year)
+                        if result:
+                            start_date = result["start"]
+                            break
+                    except Exception:
+                        continue
+                
+                end_match = re.search(pattern, end_text, re.IGNORECASE)
+                if end_match and len(end_match.groups()) >= 3:
+                    try:
+                        day = int(end_match.groups()[0])
+                        month_name = end_match.groups()[1]
+                        year = int(end_match.groups()[2])
+                        result = _parse_date_fallback(day, month_name, year)
+                        if result:
+                            end_date = result["start"]
+                            break
+                    except Exception:
+                        continue
+            
+            if start_date and end_date:
+                return {"start": start_date, "end": end_date}
     
     # if dateparser available, try to find any dates
     if HAS_DATEPARSER:

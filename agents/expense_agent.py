@@ -24,6 +24,8 @@ expense_agent = Agent(
         "5. SUBCATEGORY: Provide a more specific subcategory within the main category (e.g., 'Clothing' for Shopping, 'Restaurant' for Food)\n"
         "6. PAYMENT METHOD: Infer from context if mentioned, otherwise leave as null\n"
         "7. DATE: Use today's date in YYYY-MM-DD format if not specified\n\n"
+        "8. Don't hallucinate any information, only extract the information that is explicitly mentioned in the user's message.\n"
+        "9. Don't use $ in the amount use the indian currency symbol ₹"
         "EXAMPLES:\n"
         "Input: 'I went with Reena and Rita on Shopping where I bought items costing about 800'\n"
         "Output: {\n"
