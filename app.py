@@ -207,15 +207,44 @@ async def process_request(request: UserRequest):
                     request_counters["errors"] += 1
                 logger.exception(f"[QUERY_ERROR] user_id={request.user_id}, error={str(e)}")
                 raise HTTPException(status_code=500, detail=str(e) if DEBUG else "Query processing failed")
+# Replace lines 214-218 in app.py with:
 
         # -----------------
-        # Unknown Route
+        # Conversation Flow (Route 3)
         # -----------------
         else:
-            async with metrics_lock:
-                request_counters["unknown"] += 1
-            logger.info(f"[UNKNOWN_INPUT] user_id={request.user_id}, text='{request.text[:100]}...'")
-            return {"type": "unknown", "message": "Input does not relate to expenses."}
+            try:
+                logger.info(f"[CONVERSATION_START] user_id={request.user_id}")
+                
+                # Import and use conversation agent
+                from agents.conversation_agent import handle_conversation
+                
+                try:
+                    conversation_result = await wait_for(
+                        handle_conversation(request.text, request.user_id),
+                        timeout=30
+                    )
+                except TimeoutError:
+                    logger.error(f"[CONVERSATION_TIMEOUT] user_id={request.user_id}")
+                    raise HTTPException(status_code=504, detail="Conversation timed out")
+
+                async with metrics_lock:
+                    request_counters["unknown"] += 1
+
+                logger.info(f"[CONVERSATION_ANSWER] user_id={request.user_id}, type={conversation_result.conversation_type}")
+                return {
+                    "type": "conversation", 
+                    "data": deep_serialize(conversation_result), 
+                    "message": conversation_result.response
+                }
+
+            except HTTPException:
+                raise
+            except Exception as e:
+                async with metrics_lock:
+                    request_counters["errors"] += 1
+                logger.exception(f"[CONVERSATION_ERROR] user_id={request.user_id}, error={str(e)}")
+                raise HTTPException(status_code=500, detail=str(e) if DEBUG else "Conversation failed")
 
     except HTTPException:
         raise

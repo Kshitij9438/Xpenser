@@ -47,6 +47,7 @@ Rules:
   "query": null,
   "output": null
 }
+8.Use indian currency symbol ₹ instead of $
 
 Always validate:
 - user_id matches input
