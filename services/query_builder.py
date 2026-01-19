@@ -1,11 +1,18 @@
-# FILE: services/query_builder.py
 """
-Query Builder & Data Fetcher with enhanced logging
+Query Builder & Data Fetcher (LOCKED)
+
+Responsible for converting QueryRequest into Prisma queries and returning
+fully validated QueryResult objects.
+
+Design guarantees:
+- Deterministic filtering
+- Correct aggregation semantics
+- No silent mutation
 """
 
 import logging
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Optional
 
 from prisma import Prisma
@@ -13,6 +20,9 @@ from models.query import QueryRequest, QueryResult, QueryFilters
 from services.utils import deep_serialize
 
 
+# ---------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------
 logger = logging.getLogger("query_builder")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -20,200 +30,186 @@ if not logger.handlers:
     fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(fh)
 
-# -----------------------------
-# Helper: parse ISO date strings
-# -----------------------------
-def _parse_iso_date(s: str) -> datetime:
-    return datetime.fromisoformat(s)
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+def _parse_iso_date(date_str: str, end_of_day: bool = False) -> datetime:
+    dt = datetime.fromisoformat(date_str)
+    if end_of_day:
+        return dt + timedelta(days=1) - timedelta(microseconds=1)
+    return dt
 
-# -----------------------------
-# Helper: build Prisma "where" filter
-# -----------------------------
-def _build_where_from_filters(filters: QueryFilters, user_id: str) -> Dict[str, Any]:
-    """
-    Converts QueryFilters -> Prisma-compatible where dictionary.
-    Uses case-insensitive string comparison where possible.
-    Handles array fields (companions), numeric ranges, and date ranges.
-    """
-    where: Dict[str, Any] = {"user_id": user_id}
-    
-    print(f"[QUERY_BUILDER] Building where clause for user_id: {user_id}")
-    print(f"[QUERY_BUILDER] Filters: {filters}")
 
-    # -------- String fields: use Prisma "mode: insensitive" --------
-    if getattr(filters, "category", None):
-        where["category"] = {"equals": filters.category, "mode": "insensitive"}
-        print(f"[QUERY_BUILDER] Added category filter: {filters.category}")
-    if getattr(filters, "subcategory", None):
-        where["subcategory"] = {"equals": filters.subcategory, "mode": "insensitive"}
-        print(f"[QUERY_BUILDER] Added subcategory filter: {filters.subcategory}")
-    if getattr(filters, "paymentMethod", None):
-        where["paymentMethod"] = {"equals": filters.paymentMethod, "mode": "insensitive"}
-        print(f"[QUERY_BUILDER] Added payment method filter: {filters.paymentMethod}")
-
-    # -------- Array field: companions --------
-    companions = getattr(filters, "companions", None)
-    if companions:
-        # Prisma cannot do case-insensitive 'has'/'has_some' yet, so normalize to lowercase
-        if isinstance(companions, list):
-            lc_companions = [c.lower() for c in companions]
-            where["companions"] = {"has_some": lc_companions} if len(lc_companions) > 1 else {"has": lc_companions[0]}
-        else:
-            where["companions"] = {"has": companions.lower()}
-        print(f"[QUERY_BUILDER] Added companions filter: {companions}")
-
-    # -------- Numeric filters: amount --------
-    amt_filter: Dict[str, Any] = {}
-    if getattr(filters, "min_amount", None) is not None:
-        amt_filter["gte"] = filters.min_amount
-        print(f"[QUERY_BUILDER] Added min_amount filter: {filters.min_amount}")
-    if getattr(filters, "max_amount", None) is not None:
-        amt_filter["lte"] = filters.max_amount
-        print(f"[QUERY_BUILDER] Added max_amount filter: {filters.max_amount}")
-    if amt_filter:
-        where["amount"] = amt_filter
-
-    # -------- Date range filters --------
-    dr = getattr(filters, "date_range", None)
-    if dr:
-        print(f"[QUERY_BUILDER] Processing date range: {dr}")
-        date_cond: Dict[str, Any] = {}
-        if getattr(dr, "start", None):
-            start_date = _parse_iso_date(dr.start)
-            date_cond["gte"] = start_date
-            print(f"[QUERY_BUILDER] Added start date filter: {start_date}")
-        if getattr(dr, "end", None):
-            end_date = _parse_iso_date(dr.end)
-            date_cond["lte"] = end_date
-            print(f"[QUERY_BUILDER] Added end date filter: {end_date}")
-        if date_cond:
-            where["date"] = date_cond
-            print(f"[QUERY_BUILDER] Final date condition: {date_cond}")
-
-    print(f"[QUERY_BUILDER] Final where clause: {where}")
-    return where
-# -----------------------------
-# Helper: extract Decimal list
-# -----------------------------
-def _to_decimal_list(rows: List[Any], attr: str = "amount") -> List[Decimal]:
-    vals: List[Decimal] = []
+def _to_decimal_list(rows: List[Any], field: str) -> List[Decimal]:
+    values: List[Decimal] = []
     for r in rows:
-        v = None
-        if isinstance(r, dict):
-            v = r.get(attr)
-        else:
-            v = getattr(r, attr, None)
-            if v is None and hasattr(r, "__dict__"):
-                v = r.__dict__.get(attr)
-        if v is None:
-            continue
-        vals.append(Decimal(str(v)))
-    return vals
+        val = r.get(field) if isinstance(r, dict) else getattr(r, field, None)
+        if val is not None:
+            values.append(Decimal(str(val)))
+    return values
 
-# -----------------------------
-# Helper: compute aggregate
-# -----------------------------
-def _compute_aggregate(decimals: List[Decimal], op: str) -> Optional[float]:
+
+def _compute_aggregate(values: List[Decimal], op: str) -> Optional[float]:
     if op == "count":
-        return len(decimals)
-    if not decimals:
+        return len(values)
+    if not values:
         return None if op in ("min", "max") else 0.0
     if op == "sum":
-        return float(sum(decimals))
+        return float(sum(values))
     if op == "avg":
-        return float(sum(decimals) / Decimal(len(decimals)))
+        return float(sum(values) / Decimal(len(values)))
     if op == "min":
-        return float(min(decimals))
+        return float(min(values))
     if op == "max":
-        return float(max(decimals))
+        return float(max(values))
     return None
 
-# -----------------------------
-# Core: run query
-# -----------------------------
+# ---------------------------------------------------------------------
+# WHERE builder
+# ---------------------------------------------------------------------
+def _build_where(filters: QueryFilters, user_id: str) -> Dict[str, Any]:
+    where: Dict[str, Any] = {"user_id": user_id}
+
+    logger.info(f"[WHERE] user_id={user_id}")
+    logger.info(f"[WHERE] filters={filters}")
+
+    if filters.category:
+        where["category"] = {"equals": filters.category, "mode": "insensitive"}
+
+    if filters.subcategory:
+        where["subcategory"] = {"equals": filters.subcategory, "mode": "insensitive"}
+
+    if filters.paymentMethod:
+        where["paymentMethod"] = {"equals": filters.paymentMethod, "mode": "insensitive"}
+
+    if filters.companions:
+        comps = [c.lower() for c in filters.companions]
+        where["companions"] = {"has_some": comps} if len(comps) > 1 else {"has": comps[0]}
+
+    amount_cond: Dict[str, Any] = {}
+    if filters.min_amount is not None:
+        amount_cond["gte"] = filters.min_amount
+    if filters.max_amount is not None:
+        amount_cond["lte"] = filters.max_amount
+    if amount_cond:
+        where["amount"] = amount_cond
+
+    if filters.date_range:
+        date_cond: Dict[str, Any] = {}
+        if filters.date_range.start:
+            date_cond["gte"] = _parse_iso_date(filters.date_range.start)
+        if filters.date_range.end:
+            date_cond["lte"] = _parse_iso_date(filters.date_range.end, end_of_day=True)
+        if date_cond:
+            where["date"] = date_cond
+
+    logger.info(f"[WHERE_FINAL] {where}")
+    return where
+
+# ---------------------------------------------------------------------
+# Core Execution
+# ---------------------------------------------------------------------
 async def run_query(prisma_db: Prisma, request: QueryRequest) -> QueryResult:
     """
-    Accepts QueryRequest, executes Prisma query, handles aggregation/group_by,
-    returns QueryResult.
+    Execute a QueryRequest safely and deterministically.
     """
-    # Safety defaults
-    if not request.limit or request.limit <= 0:
-        request.limit = 100
-    if not request.offset or request.offset < 0:
-        request.offset = 0
 
-    where = _build_where_from_filters(request.filters, request.user_id)
-    meta = {"limit": request.limit, "offset": request.offset}
+    limit = request.limit if request.limit and request.limit > 0 else 100
+    offset = request.offset if request.offset and request.offset >= 0 else 0
+    meta = {"limit": limit, "offset": offset}
 
-    # -------- Aggregation-only (no group_by) --------
+    where = _build_where(request.filters, request.user_id)
+
+    # -------------------------------------------------
+    # AGGREGATE ONLY (no group_by)
+    # -------------------------------------------------
     if request.aggregate and not request.group_by:
         if request.aggregate == "count":
             total = await prisma_db.expense.count(where=where)
-            return QueryResult(rows=[], aggregate_result={"count": total}, meta=meta)
+            return QueryResult(
+                rows=[],
+                aggregate_result={"count": total},
+                meta=meta,
+            )
 
         rows = await prisma_db.expense.find_many(where=where)
-        decimals = _to_decimal_list(rows, request.aggregate_field or "amount")
-        agg_val = _compute_aggregate(decimals, request.aggregate)
-        return QueryResult(rows=[], aggregate_result={request.aggregate: agg_val}, meta=meta)
+        values = _to_decimal_list(rows, request.aggregate_field or "amount")
+        result = _compute_aggregate(values, request.aggregate)
 
-    # -------- Group-by (Python-side) --------
+        return QueryResult(
+            rows=[],
+            aggregate_result={request.aggregate: result},
+            meta=meta,
+        )
+
+    # -------------------------------------------------
+    # GROUP BY (Python-side)
+    # -------------------------------------------------
     if request.group_by:
-        group_fields: List[str] = request.group_by if isinstance(request.group_by, list) else [request.group_by]
+        group_fields = (
+            request.group_by if isinstance(request.group_by, list) else [request.group_by]
+        )
 
-        # forbid array fields
-        for gf in group_fields:
-            if gf == "companions":
-                raise ValueError("Cannot group_by array field 'companions'")
+        if "companions" in group_fields:
+            raise ValueError("group_by on array field 'companions' is not allowed")
 
         rows = await prisma_db.expense.find_many(where=where)
-        groups: Dict[Tuple[Any, ...], List[Any]] = {}
+        buckets: Dict[Tuple[Any, ...], List[Any]] = {}
 
         for r in rows:
-            key = tuple(getattr(r, f, None) if not isinstance(r, dict) else r.get(f) for f in group_fields)
-            groups.setdefault(key, []).append(r)
+            key = tuple(getattr(r, f, None) for f in group_fields)
+            buckets.setdefault(key, []).append(r)
 
         results: List[Dict[str, Any]] = []
-        for key, items in groups.items():
-            g: Dict[str, Any] = {group_fields[i]: deep_serialize(key[i]) for i in range(len(group_fields))}
+        for key, items in buckets.items():
+            record = {group_fields[i]: deep_serialize(key[i]) for i in range(len(key))}
+
             if request.aggregate:
                 if request.aggregate == "count":
-                    g["count"] = len(items)
+                    record["count"] = len(items)
                 else:
-                    decimals = _to_decimal_list(items, request.aggregate_field or "amount")
-                    g[request.aggregate] = _compute_aggregate(decimals, request.aggregate)
+                    vals = _to_decimal_list(items, request.aggregate_field or "amount")
+                    record[request.aggregate] = _compute_aggregate(vals, request.aggregate)
             else:
-                g["count"] = len(items)
-            results.append(g)
+                record["count"] = len(items)
 
-        # optional sorting on grouped results
+            results.append(record)
+
         if request.sort_by:
-            sort_key = request.sort_by
             reverse = (request.sort_order or "desc") == "desc"
-            def _grp_sort_key(item: Dict[str, Any]):
-                val = item.get(sort_key)
-                if val is None:
+
+            def _safe_sort(x):
+                v = x.get(request.sort_by)
+                if v is None:
                     return (1, None)
                 try:
-                    return (0, float(val))
+                    return (0, float(v))
                 except Exception:
-                    return (0, str(val))
-            results.sort(key=_grp_sort_key, reverse=reverse)
+                    return (0, str(v))
 
-        if request.limit:
-            results = results[:request.limit]
+            results.sort(key=_safe_sort, reverse=reverse)
+
+        results = results[:limit]
 
         return QueryResult(rows=results, aggregate_result=None, meta=meta)
 
-    # -------- Normal find (no group, no aggregate) --------
-    find_kwargs: Dict[str, Any] = {"where": where, "skip": request.offset, "take": request.limit}
+    # -------------------------------------------------
+    # NORMAL FIND
+    # -------------------------------------------------
+    find_kwargs: Dict[str, Any] = {
+        "where": where,
+        "skip": offset,
+        "take": limit,
+    }
+
     if request.sort_by:
         find_kwargs["order"] = {request.sort_by: request.sort_order or "desc"}
 
-    rows_raw = await prisma_db.expense.find_many(**find_kwargs)
-    total_count = await prisma_db.expense.count(where=where)
+    rows = await prisma_db.expense.find_many(**find_kwargs)
+    total = await prisma_db.expense.count(where=where)
 
     return QueryResult(
-        rows=deep_serialize(rows_raw),
+        rows=deep_serialize(rows),
         aggregate_result=None,
-        meta={**meta, "total_count": total_count},
+        meta={**meta, "total_count": total},
     )

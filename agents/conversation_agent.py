@@ -3,10 +3,10 @@ from pydantic import BaseModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from config import GOOGLE_API_KEY
-
+from config import GEMINI_MODEL_NAME
 # Provider & Model setup
 provider = GoogleProvider(api_key=GOOGLE_API_KEY)
-model = GoogleModel("gemini-1.5-flash", provider=provider)
+model = GoogleModel(GEMINI_MODEL_NAME, provider=provider)
 
 class ConversationResponse(BaseModel):
     response: str

@@ -1,4 +1,4 @@
-# FILE: services/canonicalizer_improved.py
+# FILE: services/canonicalizer.py
 """
 PHASE 1 CRITICAL FIXES - Enhanced Canonicalization
 - Improved payment method canonicalization

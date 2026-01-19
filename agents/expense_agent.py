@@ -5,12 +5,12 @@ from pydantic_ai.providers.google import GoogleProvider
 from models.expense import Expenses
 from config import GOOGLE_API_KEY
 from datetime import datetime
-
+from config import GEMINI_MODEL_NAME
 # -----------------------------
 # Expense Extraction Agent
 # -----------------------------
 provider = GoogleProvider(api_key=GOOGLE_API_KEY)
-model = GoogleModel("gemini-1.5-flash", provider=provider)
+model = GoogleModel(GEMINI_MODEL_NAME, provider=provider)
 
 expense_agent = Agent(
     model,

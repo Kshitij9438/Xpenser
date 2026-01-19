@@ -3,10 +3,11 @@ from pydantic import BaseModel
 from config import GOOGLE_API_KEY
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
+from config import GEMINI_MODEL_NAME
 
 # Provider & Model setup
 provider = GoogleProvider(api_key=GOOGLE_API_KEY)
-model = GoogleModel("gemini-1.5-flash", provider=provider)
+model = GoogleModel(GEMINI_MODEL_NAME, provider=provider)
 
 # Define router schema
 class RouteDecision(BaseModel):

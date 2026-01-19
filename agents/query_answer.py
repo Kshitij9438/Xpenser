@@ -3,18 +3,17 @@
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
-from models.query import NLPResponse
-from config import GOOGLE_API_KEY
+from models.query import NLPResponse, QueryResult
+from config import GOOGLE_API_KEY, GEMINI_MODEL_NAME
 import logging
-from models.query import QueryResult, NLPResponse
 import json
-
+from datetime import datetime
 
 # -----------------------------
 # LLM Provider / Model
 # -----------------------------
 provider = GoogleProvider(api_key=GOOGLE_API_KEY)
-model = GoogleModel("gemini-1.5-flash", provider=provider)
+model = GoogleModel(GEMINI_MODEL_NAME, provider=provider)
 
 # -----------------------------
 # Query Answer Agent: System Prompt
@@ -23,41 +22,12 @@ SYSTEM_PROMPT = """
 You are a Query Answer Agent. Your task is to transform structured database query results 
 into clear, concise, and professional natural-language answers for users. 
 
-Input JSON:
-- user_query (string): original text query
-- db_result (object): database output
-    - rows (array of objects) with optional fields:
-        - date, amount, category, subcategory, companions, paymentMethod, etc.
-    - aggregate_result (object or null): may include sum, avg, count, min, max
-    - meta (object or null): additional context like filters or notes
-- user_id (string): ID of the user who requested the data
-
 Rules:
-1. Produce concise, professional, friendly answers.
-2. Summarize aggregates clearly (sum, avg, count).
-3. Summarize grouped data in plain language.
-4. Include companions if present.
-5. If no rows or aggregates, say politely: "There are no matching records."
-6. Do NOT include raw JSON, DB schema, or internal notes.
-7. Output strictly in NLPResponse JSON schema:
-{
-  "user_id": "<same user_id>",
-  "answer": "<friendly natural-language answer>",
-  "context": { ... optional structured info ... },
-  "query": null,
-  "output": null
-}
-8.Use indian currency symbol ₹ instead of $
-
-Always validate:
-- user_id matches input
-- answer is non-empty
-- context is optional but can include summaries
+- Be concise, grounded, and factual
+- Use ₹ for currency
+- Never hallucinate details not present in data
 """
 
-# -----------------------------
-# Query Answer Agent
-# -----------------------------
 query_answer_agent = Agent(
     model=model,
     system_prompt=SYSTEM_PROMPT,
@@ -75,34 +45,85 @@ if not logger.handlers:
     logger.addHandler(fh)
 
 # -----------------------------
-# Async wrapper
+# Helpers
 # -----------------------------
-async def answer_query(user_query: str, db_result: QueryResult, user_id: str) -> NLPResponse:
+def _format_date(val):
+    if not val:
+        return "unknown date"
     try:
-        # Combine all inputs into one dict
+        if isinstance(val, str):
+            return val[:10]
+        if isinstance(val, datetime):
+            return val.date().isoformat()
+    except Exception:
+        pass
+    return str(val)
+
+# -----------------------------
+# Async wrapper (FIXED)
+# -----------------------------
+async def answer_query(
+    user_query: str,
+    db_result: QueryResult,
+    user_id: str
+) -> NLPResponse:
+    try:
+        # -------------------------------------------------
+        # 1. DETERMINISTIC LIST / RANKING ANSWER (CRITICAL)
+        # -------------------------------------------------
+        if db_result.rows and not db_result.aggregate_result:
+            lines = []
+
+            for idx, row in enumerate(db_result.rows, start=1):
+                amount = row.get("amount")
+                category = row.get("category", "unknown")
+                date = _format_date(row.get("date"))
+                desc = row.get("description") or ""
+
+                lines.append(
+                    f"{idx}. ₹{amount:,.0f} — {category} on {date}"
+                    + (f" ({desc})" if desc else "")
+                )
+
+            answer = "Here are the top transactions:\n" + "\n".join(lines)
+
+            return NLPResponse(
+                user_id=user_id,
+                answer=answer,
+                context={"type": "ranking", "count": len(lines)}
+            )
+
+        # -------------------------------------------------
+        # 2. AGGREGATE ANSWERS → LLM
+        # -------------------------------------------------
         input_payload = {
             "user_query": user_query,
             "db_result": db_result.dict(),
-            "user_id": user_id
+            "user_id": user_id,
         }
 
-        # Send as a single string
         raw_output = await query_answer_agent.run(json.dumps(input_payload))
 
-        # Extract NLPResponse
         if hasattr(raw_output, "output") and raw_output.output:
-            nlp_resp = raw_output.output
-            if isinstance(nlp_resp, dict):
-                nlp_resp["user_id"] = user_id
-                return NLPResponse(**nlp_resp)
-            elif isinstance(nlp_resp, NLPResponse):
-                nlp_resp.user_id = user_id
-                return nlp_resp
+            out = raw_output.output
+            if isinstance(out, NLPResponse):
+                out.user_id = user_id
+                return out
+            if isinstance(out, dict):
+                out["user_id"] = user_id
+                return NLPResponse(**out)
 
-        return NLPResponse(user_id=user_id, answer="There are no matching records.")
+        # -------------------------------------------------
+        # 3. EMPTY RESULT (SAFE)
+        # -------------------------------------------------
+        return NLPResponse(
+            user_id=user_id,
+            answer="There are no matching records."
+        )
 
     except Exception as e:
-        import logging
-        logger = logging.getLogger("query_answer_agent")
         logger.exception("[ANSWER_AGENT_ERROR] %s", e)
-        return NLPResponse(user_id=user_id, answer="There was an error generating the answer.")
+        return NLPResponse(
+            user_id=user_id,
+            answer="There was an issue generating the response."
+        )

@@ -1,62 +1,136 @@
-# FILE: services/query_orchestrator.py
 """
-Enhanced Query Orchestrator with improved validation
+Query Orchestrator (LOCKED)
+
+Responsibility:
+- Coordinate parsing → execution → answer generation
+- Decide query shape deterministically
+- Guarantee safe, explainable responses
 """
 
 import logging
-from typing import Any, Optional, Dict
-from prisma import Prisma
-from agents.query_parser import parse_query
-from models.query import NLPResponse, QueryRequest
-from services.query_builder import run_query
-from models.query import QueryResult
-from agents.query_answer import answer_query
-from services.query_validator import validate_query_response, create_safe_fallback_response
+from typing import Optional, Dict, Any
 
-# -----------------------------
-# Logging Setup
-# -----------------------------
+from prisma import Prisma
+
+from agents.query_parser import parse_query
+from agents.query_answer import answer_query
+from models.query import NLPResponse, QueryRequest, QueryResult
+from services.query_builder import run_query
+from services.query_validator import (
+    validate_query_response,
+    create_safe_fallback_response,
+)
+
+# ---------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------
 logger = logging.getLogger("query_orchestrator")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     fh = logging.FileHandler("query_orchestrator.log")
-    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    fh.setFormatter(formatter)
+    fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(fh)
 
+# ---------------------------------------------------------------------
+# Answer Normalization (CRITICAL FIX)
+# ---------------------------------------------------------------------
+def _normalize_answer(answer: Any) -> str:
+    """
+    Enforces answer_query contract.
 
-async def handle_user_query(user_text: str, user_id: str, prisma_db: Prisma, context: Optional[Dict[str, Any]] = None) -> NLPResponse:
+    - If answer_query returns str → use it
+    - If it returns NLPResponse → extract .answer
+    - Otherwise → stringify safely
     """
-    Enhanced query handling with improved validation
+    if isinstance(answer, str):
+        return answer
+    if hasattr(answer, "answer"):
+        return str(answer.answer)
+    return str(answer)
+
+# ---------------------------------------------------------------------
+# Core Orchestrator
+# ---------------------------------------------------------------------
+async def handle_user_query(
+    user_text: str,
+    user_id: str,
+    prisma_db: Prisma,
+    context: Optional[Dict[str, Any]] = None,
+) -> NLPResponse:
     """
-    try:
-        logger.info(f"Processing query for user {user_id}: {user_text}")
-        
-        # Step 1: Parse query
-        parsed_result: QueryRequest = await parse_query(user_text, user_id)
-        logger.info(f"Parsed query: {parsed_result}")
-        
-        # Step 2: Execute query
-        result: QueryResult = await run_query(prisma_db, parsed_result)
-        logger.info(f"Query result: {result}")
-        
-        # Step 3: Generate answer
-        nlp_response: NLPResponse = await answer_query(user_text, result, user_id)
-        logger.info(f"Generated answer: {nlp_response.answer}")
-        
-        # Step 4: Enhanced validation with original query
-        validation_warning = validate_query_response(result, nlp_response, user_text)
-        if validation_warning:
-            logger.warning(f"Validation warning: {validation_warning}")
-            # Use safe fallback response
+    Orchestrates full query lifecycle.
+
+    Contract:
+    - Always returns NLPResponse
+    - Never fabricates answers without data
+    - Never hides empty results
+    """
+
+    logger.info(f"[ORCH] user={user_id} | text='{user_text}'")
+
+    # -------------------------------------------------
+    # 1. PARSE
+    # -------------------------------------------------
+    parsed: QueryRequest = await parse_query(user_text, user_id)
+    logger.info(f"[ORCH] Parsed QueryRequest: {parsed}")
+
+    # -------------------------------------------------
+    # 2. EXECUTE
+    # -------------------------------------------------
+    result: QueryResult = await run_query(prisma_db, parsed)
+    logger.info(f"[ORCH] QueryResult: {result}")
+
+    # -------------------------------------------------
+    # 3. CLASSIFY QUERY SHAPE (AUTHORITATIVE)
+    # -------------------------------------------------
+    is_aggregate = parsed.aggregate is not None
+    has_rows = bool(result.rows)
+    has_aggregate = bool(result.aggregate_result)
+
+    logger.info(
+        f"[ORCH] shape: aggregate={is_aggregate}, rows={has_rows}, agg_result={has_aggregate}"
+    )
+
+    # -------------------------------------------------
+    # 4. AGGREGATE QUERIES
+    # -------------------------------------------------
+    if is_aggregate:
+        if not has_aggregate:
+            logger.warning("[ORCH] Aggregate query returned no aggregate_result")
             return create_safe_fallback_response(result, user_id, user_text)
-        
-        return nlp_response
-        
-    except Exception as e:
-        logger.exception(f"Error handling query: {e}")
-        return NLPResponse(
-            user_id=user_id, 
-            answer="There was an error processing your query. Please try rephrasing it.",
-            context={"error": str(e)}
+
+        raw_answer = await answer_query(user_text, result, user_id)
+        answer = _normalize_answer(raw_answer)
+
+        response = NLPResponse(
+            user_id=user_id,
+            answer=answer,
+            query=parsed,
+            output=result,
         )
+
+        validate_query_response(result, response, user_text)
+        return response
+
+    # -------------------------------------------------
+    # 5. LIST / RANKING / DETAIL QUERIES
+    # -------------------------------------------------
+    if has_rows:
+        raw_answer = await answer_query(user_text, result, user_id)
+        answer = _normalize_answer(raw_answer)
+
+        response = NLPResponse(
+            user_id=user_id,
+            answer=answer,
+            query=parsed,
+            output=result,
+        )
+
+        validate_query_response(result, response, user_text)
+        return response
+
+    # -------------------------------------------------
+    # 6. EMPTY BUT VALID
+    # -------------------------------------------------
+    logger.info("[ORCH] No rows returned — safe fallback")
+    return create_safe_fallback_response(result, user_id, user_text)

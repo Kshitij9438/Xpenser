@@ -16,7 +16,7 @@ def get_env_var(name: str) -> str:
 
 # Example usage
 GOOGLE_API_KEY = get_env_var("GOOGLE_API_KEY")
-
+GEMINI_MODEL_NAME = "models/gemini-flash-latest"
 # Optional vars (with defaults)
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
 PORT = int(os.getenv("PORT", "8000"))
