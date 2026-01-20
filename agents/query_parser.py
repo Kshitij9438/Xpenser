@@ -1,13 +1,15 @@
 """
-PHASE 1 CRITICAL FIXES - Enhanced Query Parser (v1.1)
+PHASE 2 — Query Parser → Intent Draft (LOCKED)
 
-This module converts natural language queries into a *QueryDraft*.
-It DOES NOT construct QueryRequest.
+This module converts natural language into a *QueryDraft*.
+It does NOT construct QueryRequest.
+It does NOT resolve shape.
+It does NOT enforce execution invariants.
 
 Design guarantees:
 - Deterministic signals override LLM guesses
-- No execution invariants enforced here
 - No QueryRequest construction
+- No execution assumptions
 - No silent failures
 """
 
@@ -126,9 +128,12 @@ model = GoogleModel(GEMINI_MODEL_NAME, provider=provider)
 SYSTEM_PROMPT = """
 You are a Query Parser Agent.
 
-Convert user natural language into a JSON object describing intent.
-DO NOT infer execution shape.
-DO NOT invent filters.
+Convert user natural language into a JSON object describing INTENT ONLY.
+
+DO NOT:
+- Construct QueryRequest
+- Infer execution shape
+- Invent filters
 
 Allowed keys:
 - filters
@@ -152,6 +157,11 @@ query_parser_agent = Agent(
 # Reconciliation Logic (CORE)
 # ---------------------------------------------------------------------
 def _reconcile(parsed: Dict[str, Any], pre: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    """
+    Produces a QueryDraft.
+    No execution invariants enforced here.
+    """
+
     draft: Dict[str, Any] = {
         "user_id": user_id,
         "filters": {},
@@ -208,7 +218,7 @@ def _reconcile(parsed: Dict[str, Any], pre: Dict[str, Any], user_id: str) -> Dic
             draft["aggregate"] = "count"
 
     # -----------------------------
-    # LLM fields (LOW PRIORITY)
+    # LLM hints (LOW PRIORITY)
     # -----------------------------
     for k in (
         "aggregate",
@@ -220,7 +230,7 @@ def _reconcile(parsed: Dict[str, Any], pre: Dict[str, Any], user_id: str) -> Dic
         "limit",
         "offset",
     ):
-        if parsed.get(k) is not None and k not in draft:
+        if parsed.get(k) is not None and draft.get(k) is None:
             draft[k] = parsed[k]
 
     return draft
@@ -237,6 +247,7 @@ async def parse_query(
     """
     Returns a QueryDraft (NOT QueryRequest).
     """
+
     user_id = validate_user_id(user_id)
     pre = pre_parse(user_input)
 
@@ -249,7 +260,7 @@ async def parse_query(
         parsed = llm_result.output or {}
         logger.info("[LLM] parse successful")
     except Exception as e:
-        logger.warning("[LLM] failed, falling back: %s", e)
+        logger.warning("[LLM] failed, using empty intent: %s", e)
         parsed = {}
 
     return _reconcile(parsed, pre, user_id)
