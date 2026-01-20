@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Tuple, Optional
 
 from prisma import Prisma
-from models.query import QueryRequest, QueryResult, QueryFilters
+from models.query import QueryRequest, QueryResult, QueryFilters, QueryShape
 from services.utils import deep_serialize
 
 
@@ -112,7 +112,20 @@ def _build_where(filters: QueryFilters, user_id: str) -> Dict[str, Any]:
 async def run_query(prisma_db: Prisma, request: QueryRequest) -> QueryResult:
     """
     Execute a QueryRequest safely and deterministically.
+
+    IMPORTANT:
+    - QueryBuilder DOES NOT infer intent
+    - request.shape MUST be set upstream
     """
+
+    # -------------------------------
+    # HARD GUARD: shape is mandatory
+    # -------------------------------
+    if not hasattr(request, "shape") or request.shape is None:
+        raise RuntimeError(
+            "QueryRequest.shape is required before execution. "
+            "QueryBuilder will not infer intent."
+        )
 
     limit = request.limit if request.limit and request.limit > 0 else 100
     offset = request.offset if request.offset and request.offset >= 0 else 0
@@ -121,9 +134,15 @@ async def run_query(prisma_db: Prisma, request: QueryRequest) -> QueryResult:
     where = _build_where(request.filters, request.user_id)
 
     # -------------------------------------------------
-    # AGGREGATE ONLY (no group_by)
+    # AGGREGATE
     # -------------------------------------------------
-    if request.aggregate and not request.group_by:
+    if request.shape == QueryShape.AGGREGATE:
+        if not request.aggregate:
+            raise RuntimeError("AGGREGATE shape requires aggregate field")
+
+        if request.group_by:
+            raise RuntimeError("AGGREGATE shape cannot include group_by")
+
         if request.aggregate == "count":
             total = await prisma_db.expense.count(where=where)
             return QueryResult(
@@ -143,15 +162,18 @@ async def run_query(prisma_db: Prisma, request: QueryRequest) -> QueryResult:
         )
 
     # -------------------------------------------------
-    # GROUP BY (Python-side)
+    # GROUPED
     # -------------------------------------------------
-    if request.group_by:
+    if request.shape == QueryShape.GROUPED:
+        if not request.group_by:
+            raise RuntimeError("GROUPED shape requires group_by")
+
         group_fields = (
             request.group_by if isinstance(request.group_by, list) else [request.group_by]
         )
 
         if "companions" in group_fields:
-            raise ValueError("group_by on array field 'companions' is not allowed")
+            raise RuntimeError("group_by on array field 'companions' is not allowed")
 
         rows = await prisma_db.expense.find_many(where=where)
         buckets: Dict[Tuple[Any, ...], List[Any]] = {}
@@ -194,22 +216,31 @@ async def run_query(prisma_db: Prisma, request: QueryRequest) -> QueryResult:
         return QueryResult(rows=results, aggregate_result=None, meta=meta)
 
     # -------------------------------------------------
-    # NORMAL FIND
+    # LIST
     # -------------------------------------------------
-    find_kwargs: Dict[str, Any] = {
-        "where": where,
-        "skip": offset,
-        "take": limit,
-    }
+    if request.shape == QueryShape.LIST:
+        if request.aggregate:
+            raise RuntimeError("LIST shape cannot include aggregate")
 
-    if request.sort_by:
-        find_kwargs["order"] = {request.sort_by: request.sort_order or "desc"}
+        find_kwargs: Dict[str, Any] = {
+            "where": where,
+            "skip": offset,
+            "take": limit,
+        }
 
-    rows = await prisma_db.expense.find_many(**find_kwargs)
-    total = await prisma_db.expense.count(where=where)
+        if request.sort_by:
+            find_kwargs["order"] = {request.sort_by: request.sort_order or "desc"}
 
-    return QueryResult(
-        rows=deep_serialize(rows),
-        aggregate_result=None,
-        meta={**meta, "total_count": total},
-    )
+        rows = await prisma_db.expense.find_many(**find_kwargs)
+        total = await prisma_db.expense.count(where=where)
+
+        return QueryResult(
+            rows=deep_serialize(rows),
+            aggregate_result=None,
+            meta={**meta, "total_count": total},
+        )
+
+    # -------------------------------------------------
+    # UNKNOWN SHAPE
+    # -------------------------------------------------
+    raise RuntimeError(f"Unknown QueryShape: {request.shape}")

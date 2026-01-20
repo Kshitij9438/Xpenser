@@ -3,8 +3,14 @@ Query Orchestrator (LOCKED)
 
 Responsibility:
 - Coordinate parsing → execution → answer generation
-- Decide query shape deterministically
-- Guarantee safe, explainable responses
+- Resolve query shape BEFORE execution
+- Construct QueryRequest (single authority)
+- Enforce hard exception boundaries
+- Always return NLPResponse to callers
+
+Philosophy:
+- Developer mistakes must crash loudly
+- Users must always receive structured, explainable failures
 """
 
 import logging
@@ -14,8 +20,10 @@ from prisma import Prisma
 
 from agents.query_parser import parse_query
 from agents.query_answer import answer_query
+
 from models.query import NLPResponse, QueryRequest, QueryResult
 from services.query_builder import run_query
+from services.query_shape_resolver import resolve_query_shape
 from services.query_validator import (
     validate_query_response,
     create_safe_fallback_response,
@@ -32,16 +40,9 @@ if not logger.handlers:
     logger.addHandler(fh)
 
 # ---------------------------------------------------------------------
-# Answer Normalization (CRITICAL FIX)
+# Answer Normalization
 # ---------------------------------------------------------------------
 def _normalize_answer(answer: Any) -> str:
-    """
-    Enforces answer_query contract.
-
-    - If answer_query returns str → use it
-    - If it returns NLPResponse → extract .answer
-    - Otherwise → stringify safely
-    """
     if isinstance(answer, str):
         return answer
     if hasattr(answer, "answer"):
@@ -58,79 +59,116 @@ async def handle_user_query(
     context: Optional[Dict[str, Any]] = None,
 ) -> NLPResponse:
     """
-    Orchestrates full query lifecycle.
+    Orchestrates the full deterministic query lifecycle.
 
-    Contract:
-    - Always returns NLPResponse
-    - Never fabricates answers without data
-    - Never hides empty results
+    HARD GUARANTEES:
+    - QueryRequest is constructed exactly once
+    - Query shape is resolved BEFORE execution
+    - Builder never infers intent
+    - Invariant violations crash here (dev-visible)
+    - UI always receives NLPResponse
     """
 
     logger.info(f"[ORCH] user={user_id} | text='{user_text}'")
 
-    # -------------------------------------------------
-    # 1. PARSE
-    # -------------------------------------------------
-    parsed: QueryRequest = await parse_query(user_text, user_id)
-    logger.info(f"[ORCH] Parsed QueryRequest: {parsed}")
+    try:
+        # -------------------------------------------------
+        # 1. PARSE → QueryDraft (UNSAFE)
+        # -------------------------------------------------
+        draft: Dict[str, Any] = await parse_query(user_text, user_id)
+        logger.info(f"[ORCH] Parsed QueryDraft: {draft}")
 
-    # -------------------------------------------------
-    # 2. EXECUTE
-    # -------------------------------------------------
-    result: QueryResult = await run_query(prisma_db, parsed)
-    logger.info(f"[ORCH] QueryResult: {result}")
+        # -------------------------------------------------
+        # 2. RESOLVE SHAPE (AUTHORITATIVE)
+        # -------------------------------------------------
+        shape = resolve_query_shape(draft)
+        logger.info(f"[SHAPE] Resolved query shape: {shape}")
 
-    # -------------------------------------------------
-    # 3. CLASSIFY QUERY SHAPE (AUTHORITATIVE)
-    # -------------------------------------------------
-    is_aggregate = parsed.aggregate is not None
-    has_rows = bool(result.rows)
-    has_aggregate = bool(result.aggregate_result)
+        # -------------------------------------------------
+        # 3. CONSTRUCT QueryRequest (HARD GATE)
+        # -------------------------------------------------
+        query = QueryRequest(**draft, shape=shape)
+        logger.info(f"[ORCH] Constructed QueryRequest: {query}")
 
-    logger.info(
-        f"[ORCH] shape: aggregate={is_aggregate}, rows={has_rows}, agg_result={has_aggregate}"
-    )
+        # -------------------------------------------------
+        # 4. EXECUTE (BUILDER WILL CRASH IF INVALID)
+        # -------------------------------------------------
+        result: QueryResult = await run_query(prisma_db, query)
+        logger.info(f"[ORCH] QueryResult: {result}")
 
-    # -------------------------------------------------
-    # 4. AGGREGATE QUERIES
-    # -------------------------------------------------
-    if is_aggregate:
-        if not has_aggregate:
-            logger.warning("[ORCH] Aggregate query returned no aggregate_result")
-            return create_safe_fallback_response(result, user_id, user_text)
+        has_rows = bool(result.rows)
+        has_aggregate = bool(result.aggregate_result)
 
-        raw_answer = await answer_query(user_text, result, user_id)
-        answer = _normalize_answer(raw_answer)
+        # -------------------------------------------------
+        # 5. AGGREGATE QUERIES
+        # -------------------------------------------------
+        if query.shape.is_aggregate():
+            if not has_aggregate:
+                logger.warning("[ORCH] Aggregate query returned no aggregate_result")
+                return create_safe_fallback_response(result, user_id, user_text)
 
-        response = NLPResponse(
+            raw = await answer_query(user_text, result, user_id)
+            answer = _normalize_answer(raw)
+
+            response = NLPResponse(
+                user_id=user_id,
+                answer=answer,
+                query=query,
+                output=result,
+            )
+
+            validate_query_response(result, response, user_text)
+            return response
+
+        # -------------------------------------------------
+        # 6. LIST / RANKING / DETAIL QUERIES
+        # -------------------------------------------------
+        if has_rows:
+            raw = await answer_query(user_text, result, user_id)
+            answer = _normalize_answer(raw)
+
+            response = NLPResponse(
+                user_id=user_id,
+                answer=answer,
+                query=query,
+                output=result,
+            )
+
+            validate_query_response(result, response, user_text)
+            return response
+
+        # -------------------------------------------------
+        # 7. EMPTY BUT VALID
+        # -------------------------------------------------
+        logger.info("[ORCH] No rows returned — safe fallback")
+        return create_safe_fallback_response(result, user_id, user_text)
+
+    # =====================================================
+    # 🔥 INVARIANT VIOLATIONS (CRASH LOUD, FAIL SOFT)
+    # =====================================================
+    except RuntimeError as e:
+        logger.exception("[ORCH][INVARIANT_VIOLATION] %s", e)
+
+        return NLPResponse(
             user_id=user_id,
-            answer=answer,
-            query=parsed,
-            output=result,
+            answer="I couldn’t process this request due to an internal consistency issue.",
+            context={
+                "error": "invariant_violation",
+                "message": str(e),
+            },
         )
 
-        validate_query_response(result, response, user_text)
-        return response
+    # =====================================================
+    # 🚨 UNEXPECTED BUGS
+    # =====================================================
+    except Exception as e:
+        logger.exception("[ORCH][UNEXPECTED_ERROR] %s", e)
 
-    # -------------------------------------------------
-    # 5. LIST / RANKING / DETAIL QUERIES
-    # -------------------------------------------------
-    if has_rows:
-        raw_answer = await answer_query(user_text, result, user_id)
-        answer = _normalize_answer(raw_answer)
-
-        response = NLPResponse(
+        return NLPResponse(
             user_id=user_id,
-            answer=answer,
-            query=parsed,
-            output=result,
+            answer="Something went wrong while processing your request. Please try again.",
+            context={
+                "error": "unexpected_error",
+                "type": type(e).__name__,
+            },
         )
-
-        validate_query_response(result, response, user_text)
-        return response
-
-    # -------------------------------------------------
-    # 6. EMPTY BUT VALID
-    # -------------------------------------------------
-    logger.info("[ORCH] No rows returned — safe fallback")
-    return create_safe_fallback_response(result, user_id, user_text)

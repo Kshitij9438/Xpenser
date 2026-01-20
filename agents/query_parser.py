@@ -1,12 +1,13 @@
 """
-PHASE 1 CRITICAL FIXES - Enhanced Query Parser (LOCKED)
+PHASE 1 CRITICAL FIXES - Enhanced Query Parser (v1.1)
 
-This module converts natural language queries into structured QueryRequest
-objects using a deterministic + LLM hybrid strategy.
+This module converts natural language queries into a *QueryDraft*.
+It DOES NOT construct QueryRequest.
 
 Design guarantees:
-- Deterministic signals always override LLM guesses
-- QueryRequest is ALWAYS valid on exit
+- Deterministic signals override LLM guesses
+- No execution invariants enforced here
+- No QueryRequest construction
 - No silent failures
 """
 
@@ -19,7 +20,6 @@ from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 
-from models.query import QueryRequest, QueryFilters
 from services.preparser import pre_parse
 from services.canonicalizer import canonicalize_category
 from config import GOOGLE_API_KEY, GEMINI_MODEL_NAME
@@ -35,7 +35,7 @@ if not logger.handlers:
     logger.addHandler(fh)
 
 # ---------------------------------------------------------------------
-# Ranking Intent Detection (CRITICAL FIX)
+# Ranking Intent Detection (AUTHORITATIVE)
 # ---------------------------------------------------------------------
 RANKING_KEYWORDS = {
     "heaviest",
@@ -84,14 +84,9 @@ def with_rate_limiting(fn):
 def validate_user_id(user_id: Any) -> str:
     if user_id is None:
         raise ValueError("user_id cannot be None")
-
-    if not isinstance(user_id, str):
-        user_id = str(user_id)
-
-    user_id = user_id.strip()
+    user_id = str(user_id).strip()
     if not user_id:
         raise ValueError("user_id cannot be empty")
-
     return user_id
 
 # ---------------------------------------------------------------------
@@ -131,161 +126,130 @@ model = GoogleModel(GEMINI_MODEL_NAME, provider=provider)
 SYSTEM_PROMPT = """
 You are a Query Parser Agent.
 
-Convert user natural language into JSON matching the QueryRequest schema.
+Convert user natural language into a JSON object describing intent.
+DO NOT infer execution shape.
+DO NOT invent filters.
 
-Rules:
-1. ALWAYS include user_id exactly
-2. Only valid filters: category, subcategory, companions, paymentMethod,
-   min_amount, max_amount, date_range.start, date_range.end
-3. Aggregate only numeric fields (amount)
-4. Output STRICT JSON matching the schema
-5. Do not hallucinate filters
+Allowed keys:
+- filters
+- aggregate
+- aggregate_field
+- group_by
+- columns
+- sort_by
+- sort_order
+- limit
+- offset
 """
 
 query_parser_agent = Agent(
     model=model,
     system_prompt=SYSTEM_PROMPT,
-    output_type=QueryRequest,
+    output_type=dict,
 )
 
 # ---------------------------------------------------------------------
-# Safe Construction
+# Reconciliation Logic (CORE)
 # ---------------------------------------------------------------------
-def _safe_query_request(data: Dict[str, Any], user_id: str) -> QueryRequest:
-    data["user_id"] = validate_user_id(user_id)
-
-    if not data.get("filters"):
-        data["filters"] = {}
-
-    if "extras" not in data["filters"] or data["filters"]["extras"] is None:
-        data["filters"]["extras"] = {}
-
-    qr = QueryRequest(**data)
-
-    canonical = {
-        "category": canonicalize_category(qr.filters.category)
-        if qr.filters and qr.filters.category else None,
-        "paymentMethod": canonicalize_payment_method(qr.filters.paymentMethod)
-        if qr.filters else None,
+def _reconcile(parsed: Dict[str, Any], pre: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    draft: Dict[str, Any] = {
+        "user_id": user_id,
+        "filters": {},
+        "limit": pre.get("limit", 100),
+        "offset": 0,
+        "aggregate": None,
+        "aggregate_field": "amount",
+        "group_by": None,
+        "columns": None,
+        "sort_by": None,
+        "sort_order": "desc",
+        "extras": {"sources": {}},
     }
 
-    qr.filters.extras["canonical"] = canonical
-    return qr
+    filters = draft["filters"]
+    sources = draft["extras"]["sources"]
 
-# ---------------------------------------------------------------------
-# Reconciliation Logic (FIXED)
-# ---------------------------------------------------------------------
-def _reconcile(parsed: QueryRequest, pre: Dict[str, Any], user_id: str) -> QueryRequest:
-    base = parsed.model_dump(deep=True)
-
-    filters = base.setdefault("filters", {})
-    extras = filters.setdefault("extras", {})
-    extras["sources"] = {}
-
-    if pre.get("limit") is not None:
-        base["limit"] = pre["limit"]
-        extras["sources"]["limit"] = "deterministic"
-
+    # -----------------------------
+    # Deterministic overrides
+    # -----------------------------
     for key in ("min_amount", "max_amount", "date_range"):
         if pre.get(key) is not None:
             filters[key] = pre[key]
-            extras["sources"][key] = "deterministic"
+            sources[key] = "deterministic"
 
     if pre.get("companions"):
         filters["companions"] = pre["companions"]
-        extras["sources"]["companions"] = "deterministic"
+        sources["companions"] = "deterministic"
 
     if pre.get("payment_methods"):
-        filters["paymentMethod"] = pre["payment_methods"][0]
-        extras["sources"]["paymentMethod"] = "deterministic"
+        filters["paymentMethod"] = canonicalize_payment_method(pre["payment_methods"][0])
+        sources["paymentMethod"] = "deterministic"
 
     if pre.get("candidate_categories"):
-        filters["category"] = pre["candidate_categories"][0]
-        extras["sources"]["category"] = "deterministic"
+        filters["category"] = canonicalize_category(pre["candidate_categories"][0])
+        sources["category"] = "deterministic"
 
-    # -------------------------------------------------
-    # RANKING INTENT OVERRIDE (AUTHORITATIVE)
-    # -------------------------------------------------
+    # -----------------------------
+    # Ranking intent (AUTHORITATIVE)
+    # -----------------------------
     text = pre.get("raw_text", "").lower()
     is_ranking = any(k in text for k in RANKING_KEYWORDS)
 
     if is_ranking:
-        base["sort_by"] = "amount"
-        base["sort_order"] = "desc"
-        base["aggregate"] = None
-        base["group_by"] = None
-        extras["sources"]["ranking"] = "deterministic"
-
-    return _safe_query_request(base, user_id)
-
-# ---------------------------------------------------------------------
-# Fallback Construction (FIXED)
-# ---------------------------------------------------------------------
-def _fallback_query(pre: Dict[str, Any], user_text: str, user_id: str) -> QueryRequest:
-    filters = QueryFilters()
-
-    if pre.get("date_range"):
-        filters.date_range = pre["date_range"]
-    if pre.get("companions"):
-        filters.companions = pre["companions"]
-    if pre.get("payment_methods"):
-        filters.paymentMethod = pre["payment_methods"][0]
-    if pre.get("candidate_categories"):
-        filters.category = pre["candidate_categories"][0]
-
-    text = user_text.lower()
-    is_ranking = any(k in text for k in RANKING_KEYWORDS)
-
-    aggregate = None
-    if not is_ranking:
+        draft["sort_by"] = "amount"
+        draft["sort_order"] = "desc"
+        sources["ranking"] = "deterministic"
+    else:
         if any(k in text for k in ("sum", "total", "spent")):
-            aggregate = "sum"
+            draft["aggregate"] = "sum"
         elif any(k in text for k in ("average", "avg")):
-            aggregate = "avg"
+            draft["aggregate"] = "avg"
         elif any(k in text for k in ("count", "how many")):
-            aggregate = "count"
+            draft["aggregate"] = "count"
 
-    return QueryRequest(
-        user_id=user_id,
-        filters=filters,
-        aggregate=aggregate,
-        aggregate_field="amount",
-        limit=pre.get("limit", 100),
-        offset=0,
-        sort_by="amount" if is_ranking else "date",
-        sort_order="desc",
-    )
+    # -----------------------------
+    # LLM fields (LOW PRIORITY)
+    # -----------------------------
+    for k in (
+        "aggregate",
+        "aggregate_field",
+        "group_by",
+        "columns",
+        "sort_by",
+        "sort_order",
+        "limit",
+        "offset",
+    ):
+        if parsed.get(k) is not None and k not in draft:
+            draft[k] = parsed[k]
+
+    return draft
 
 # ---------------------------------------------------------------------
 # Main Entry
 # ---------------------------------------------------------------------
 @with_rate_limiting
-async def parse_query_with_fallback(
-    user_input: str,
-    user_id: str,
-    context: Optional[Dict[str, Any]] = None,
-) -> QueryRequest:
-    user_id = validate_user_id(user_id)
-    pre = pre_parse(user_input)
-    logger.info(f"Pre-parse: {pre}")
-
-    enriched_prompt = f"User query: {user_input}\nUser ID: {user_id}"
-
-    try:
-        parsed = await query_parser_agent.run(enriched_prompt)
-        logger.info("LLM parse successful")
-        return _reconcile(parsed.output, pre, user_id)
-
-    except Exception as e:
-        logger.warning(f"LLM failed, using fallback: {e}")
-        return _fallback_query(pre, user_input, user_id)
-
-# ---------------------------------------------------------------------
-# Backward Compatibility
-# ---------------------------------------------------------------------
 async def parse_query(
     user_input: str,
     user_id: str,
     context: Optional[Dict[str, Any]] = None,
-) -> QueryRequest:
-    return await parse_query_with_fallback(user_input, user_id, context)
+) -> Dict[str, Any]:
+    """
+    Returns a QueryDraft (NOT QueryRequest).
+    """
+    user_id = validate_user_id(user_id)
+    pre = pre_parse(user_input)
+
+    logger.info(f"[PRE_PARSE] {pre}")
+
+    try:
+        llm_result = await query_parser_agent.run(
+            f"User query: {user_input}\nUser ID: {user_id}"
+        )
+        parsed = llm_result.output or {}
+        logger.info("[LLM] parse successful")
+    except Exception as e:
+        logger.warning("[LLM] failed, falling back: %s", e)
+        parsed = {}
+
+    return _reconcile(parsed, pre, user_id)
