@@ -24,7 +24,7 @@ from pydantic_ai.providers.google import GoogleProvider
 
 from services.preparser import pre_parse
 from services.canonicalizer import canonicalize_category
-from config import GOOGLE_API_KEY, GEMINI_MODEL_NAME
+from configurations.config import GOOGLE_API_KEY, GEMINI_MODEL_NAME
 
 # ---------------------------------------------------------------------
 # Logging

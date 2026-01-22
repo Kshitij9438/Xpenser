@@ -3,9 +3,9 @@ from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
 from models.expense import Expenses
-from config import GOOGLE_API_KEY
+from configurations.config import GOOGLE_API_KEY
 from datetime import datetime
-from config import GEMINI_MODEL_NAME
+from configurations.config import GEMINI_MODEL_NAME
 # -----------------------------
 # Expense Extraction Agent
 # -----------------------------

@@ -1,9 +1,9 @@
 from pydantic_ai import Agent
 from pydantic import BaseModel
-from config import GOOGLE_API_KEY
+from configurations.config import GOOGLE_API_KEY
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
-from config import GEMINI_MODEL_NAME
+from configurations.config import GEMINI_MODEL_NAME
 
 # Provider & Model setup
 provider = GoogleProvider(api_key=GOOGLE_API_KEY)

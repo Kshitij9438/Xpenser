@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from asyncio import Lock
 
-from config import DATABASE_URL, DEBUG
+from configurations.config import DATABASE_URL, DEBUG
 from services.router import get_route
 from prisma import Prisma
 
