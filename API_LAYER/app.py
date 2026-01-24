@@ -4,6 +4,7 @@ import json
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse  # ✅ IMPORTANT
 from pydantic import BaseModel
 from asyncio import Lock
 
@@ -105,7 +106,6 @@ async def startup():
         DB_ERROR = None
         logger.info("✅ Prisma DB connected")
 
-        # Executors are created ONLY after DB is ready
         expense_executor = ExpenseExecutor()
         query_executor = QueryExecutor(db)
         conversation_executor = ConversationExecutor()
@@ -201,17 +201,43 @@ async def process_request(request: UserRequest):
                 request_counters["unknown"] += 1
             return response
 
+    # -----------------------------
+    # FAILURE ENVELOPES (LOCKED)
+    # -----------------------------
+    except HTTPException as e:
+        async with metrics_lock:
+            request_counters["errors"] += 1
+
+        logger.warning(
+            f"[HTTP_ERROR] user_id={request.user_id}, status={e.status_code}, detail={e.detail}"
+        )
+
+        return JSONResponse(
+            status_code=e.status_code,
+            content={
+                "error": {
+                    "type": "http_error",
+                    "message": str(e.detail),
+                }
+            },
+        )
+
     except Exception as e:
         async with metrics_lock:
             request_counters["errors"] += 1
 
         logger.exception(
-            f"[ERROR] user_id={request.user_id}, exception={e}"
+            f"[UNHANDLED_ERROR] user_id={request.user_id}, exception={e}"
         )
 
-        raise HTTPException(
+        return JSONResponse(
             status_code=500,
-            detail=str(e) if DEBUG else "An unexpected error occurred",
+            content={
+                "error": {
+                    "type": "unexpected_error",
+                    "message": "An unexpected error occurred",
+                }
+            },
         )
 
 
