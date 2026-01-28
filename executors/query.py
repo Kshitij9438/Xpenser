@@ -10,7 +10,7 @@ from services.utils import deep_serialize
 class QueryExecutor(BaseExecutor):
     """
     Executes query-related intents.
-    Logic extracted directly from app.py without behavior changes.
+    Executor is a TRANSPORT layer only.
     """
 
     def __init__(self, db):
@@ -29,23 +29,10 @@ class QueryExecutor(BaseExecutor):
                     detail="Query processing timed out",
                 )
 
+            # 🔒 DO NOT reinterpret output
+            # 🔒 DO NOT normalize aggregates
+            # 🔒 DO NOT inject defaults
             data = deep_serialize(final_answer)
-
-            # -----------------------------
-            # ZERO-DATA NORMALIZATION (FIX)
-            # -----------------------------
-            output = data.get("output")
-
-            if output is None:
-                output = {
-                    "rows": [],
-                    "aggregate_result": {"sum": 0},
-                }
-            else:
-                output.setdefault("rows", [])
-                output.setdefault("aggregate_result", {"sum": 0})
-
-            data["output"] = output
 
             return {
                 "type": "query",
