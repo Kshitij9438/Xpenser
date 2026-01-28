@@ -29,9 +29,27 @@ class QueryExecutor(BaseExecutor):
                     detail="Query processing timed out",
                 )
 
+            data = deep_serialize(final_answer)
+
+            # -----------------------------
+            # ZERO-DATA NORMALIZATION (FIX)
+            # -----------------------------
+            output = data.get("output")
+
+            if output is None:
+                output = {
+                    "rows": [],
+                    "aggregate_result": {"sum": 0},
+                }
+            else:
+                output.setdefault("rows", [])
+                output.setdefault("aggregate_result", {"sum": 0})
+
+            data["output"] = output
+
             return {
                 "type": "query",
-                "data": deep_serialize(final_answer),
+                "data": data,
                 "message": getattr(final_answer, "answer", ""),
             }
 
