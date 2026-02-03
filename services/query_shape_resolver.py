@@ -16,18 +16,32 @@ def resolve_query_shape(draft: Mapping[str, Any]) -> QueryShape:
     - No LLM
     - No heuristics
     - No mutation
+    - Semantic intent is authoritative
     """
+
+    semantic = draft.get("semantic_intents", {})
+
+    is_aggregate = semantic.get("aggregate", False)
+    is_ranking = semantic.get("ranking", False)
 
     aggregate = draft.get("aggregate")
     group_by = draft.get("group_by")
 
-    # Aggregate without grouping
-    if aggregate and not group_by:
+    # -----------------------------
+    # Aggregate intent
+    # -----------------------------
+    if is_aggregate:
+        if group_by:
+            return QueryShape.GROUPED
         return QueryShape.AGGREGATE
 
-    # Aggregate with grouping
-    if aggregate and group_by:
-        return QueryShape.GROUPED
+    # -----------------------------
+    # Ranking intent (still list-shaped)
+    # -----------------------------
+    if is_ranking:
+        return QueryShape.LIST
 
-    # Everything else is list-style
+    # -----------------------------
+    # Default: list intent
+    # -----------------------------
     return QueryShape.LIST

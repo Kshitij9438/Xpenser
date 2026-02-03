@@ -1,21 +1,21 @@
 """
-Query Answer Generator (v1.1 — LOCKED)
+Query Answer Generator (v2.0 — LOCKED)
 
 Responsibility:
 - Convert QueryResult into human-readable answers
 - Numeric authority is STRICTLY Python
 - LLM is NOT allowed to invent or restate facts
 
-Philosophy:
-- Data speaks first
-- Language decorates, never decides
+IMPORTANT:
+- This module returns ONLY strings
+- Response object construction is owned by Query Orchestrator
 """
 
 import logging
 from datetime import datetime
 from typing import Any
 
-from models.query import NLPResponse, QueryResult
+from models.query import QueryResult
 
 # ---------------------------------------------------------------------
 # Logging
@@ -48,7 +48,7 @@ async def answer_query(
     user_query: str,
     result: QueryResult,
     user_id: str,
-) -> NLPResponse:
+) -> str:
     """
     Deterministically generates answers from QueryResult.
 
@@ -64,29 +64,20 @@ async def answer_query(
     if result.aggregate_result:
         for key, value in result.aggregate_result.items():
             if key == "sum":
-                answer = f"Total amount spent: ₹{value:,.2f}"
-            elif key == "avg":
-                answer = f"Average amount: ₹{value:,.2f}"
-            elif key == "count":
-                answer = f"Found {value} matching records."
-            elif key == "min":
-                answer = f"Minimum amount: ₹{value:,.2f}"
-            elif key == "max":
-                answer = f"Maximum amount: ₹{value:,.2f}"
-            else:
-                answer = f"{key.capitalize()}: {value}"
+                return f"Total amount spent: ₹{value:,.2f}"
+            if key == "avg":
+                return f"Average amount: ₹{value:,.2f}"
+            if key == "count":
+                return f"Found {value} matching records."
+            if key == "min":
+                return f"Minimum amount: ₹{value:,.2f}"
+            if key == "max":
+                return f"Maximum amount: ₹{value:,.2f}"
 
-            return NLPResponse(
-                user_id=user_id,
-                answer=answer,
-                context={
-                    "type": "aggregate",
-                    "metric": key,
-                },
-            )
+            return f"{key.capitalize()}: {value}"
 
     # -------------------------------------------------
-    # 2. LIST / RANKING ANSWERS (STRICT)
+    # 2. LIST / RANKING ANSWERS
     # -------------------------------------------------
     if result.rows:
         lines = []
@@ -103,20 +94,9 @@ async def answer_query(
 
             lines.append(line)
 
-        return NLPResponse(
-            user_id=user_id,
-            answer="Here are the matching transactions:\n" + "\n".join(lines),
-            context={
-                "type": "list",
-                "count": len(lines),
-            },
-        )
+        return "Here are the matching transactions:\n" + "\n".join(lines)
 
     # -------------------------------------------------
     # 3. EMPTY RESULT
     # -------------------------------------------------
-    return NLPResponse(
-        user_id=user_id,
-        answer="No matching records found.",
-        context={"type": "empty"},
-    )
+    return "No matching records found."

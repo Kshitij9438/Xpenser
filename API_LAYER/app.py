@@ -4,7 +4,7 @@ import json
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse  # ✅ IMPORTANT
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from asyncio import Lock
 
@@ -56,7 +56,7 @@ if not logger.handlers:
 app = FastAPI(title="Expense Chatbot API", version="2.0")
 
 # -----------------------------
-# Prisma + Executors (Lifecycle managed)
+# Prisma + Executors
 # -----------------------------
 db = Prisma()
 
@@ -87,7 +87,7 @@ class UserRequest(BaseModel):
     user_id: str
 
 # -----------------------------
-# Startup / Shutdown Events
+# Startup / Shutdown
 # -----------------------------
 @app.on_event("startup")
 async def startup():
@@ -202,7 +202,7 @@ async def process_request(request: UserRequest):
             return response
 
     # -----------------------------
-    # FAILURE ENVELOPES (LOCKED)
+    # FAILURE ENVELOPES (FIXED)
     # -----------------------------
     except HTTPException as e:
         async with metrics_lock:
@@ -212,12 +212,20 @@ async def process_request(request: UserRequest):
             f"[HTTP_ERROR] user_id={request.user_id}, status={e.status_code}, detail={e.detail}"
         )
 
+        # ✅ Preserve domain errors EXACTLY as raised
+        if isinstance(e.detail, dict) and "error" in e.detail:
+            return JSONResponse(
+                status_code=e.status_code,
+                content=e.detail,
+            )
+
+        # ❌ Wrap only generic HTTP errors
         return JSONResponse(
             status_code=e.status_code,
             content={
                 "error": {
                     "type": "http_error",
-                    "message": str(e.detail),
+                    "message": e.detail if isinstance(e.detail, str) else str(e.detail),
                 }
             },
         )

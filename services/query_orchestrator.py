@@ -1,21 +1,9 @@
-"""
-Query Orchestrator (LOCKED)
-
-Responsibility:
-- Coordinate parsing → execution → answer generation
-- Resolve query shape BEFORE execution
-- Construct QueryRequest (single authority)
-- Enforce hard exception boundaries
-- Always return NLPResponse to callers
-
-Philosophy:
-- Developer mistakes must crash loudly
-- Users must always receive structured, explainable failures
-"""
+# services/query_orchestrator.py
 
 import logging
 from typing import Optional, Dict, Any
 
+from fastapi import HTTPException
 from prisma import Prisma
 
 from agents.query_parser import parse_query
@@ -28,6 +16,11 @@ from services.query_validator import (
     validate_query_response,
     create_safe_fallback_response,
 )
+from services.query_semantic_validator import validate_query_semantics
+from services.semantic_commit import (
+    semantic_commit,
+    CommitDecisionType,
+)
 
 # ---------------------------------------------------------------------
 # Logging
@@ -39,15 +32,6 @@ if not logger.handlers:
     fh.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(fh)
 
-# ---------------------------------------------------------------------
-# Answer Normalization
-# ---------------------------------------------------------------------
-def _normalize_answer(answer: Any) -> str:
-    if isinstance(answer, str):
-        return answer
-    if hasattr(answer, "answer"):
-        return str(answer.answer)
-    return str(answer)
 
 # ---------------------------------------------------------------------
 # Core Orchestrator
@@ -61,105 +45,102 @@ async def handle_user_query(
     """
     Orchestrates the full deterministic query lifecycle.
 
-    HARD GUARANTEES:
-    - QueryRequest is constructed exactly once
-    - Query shape is resolved BEFORE execution
-    - Builder never infers intent
-    - Invariant violations crash here (dev-visible)
-    - UI always receives NLPResponse
+    GUARANTEES:
+    - DB execution only occurs after semantic commit
+    - answer_query returns STRING ONLY
+    - NLPResponse is constructed exactly once
+    - Data ↔ answer consistency enforced
     """
 
     logger.info(f"[ORCH] user={user_id} | text='{user_text}'")
 
     try:
         # -------------------------------------------------
-        # 1. PARSE → QueryDraft (UNSAFE)
+        # 1. PARSE → DRAFT
         # -------------------------------------------------
         draft: Dict[str, Any] = await parse_query(user_text, user_id)
         logger.info(f"[ORCH] Parsed QueryDraft: {draft}")
 
         # -------------------------------------------------
-        # 2. RESOLVE SHAPE (AUTHORITATIVE)
+        # 2. SEMANTIC INVARIANTS (STRUCTURAL)
+        # -------------------------------------------------
+        validate_query_semantics(draft)
+
+        # -------------------------------------------------
+        # 3. RESOLVE SHAPE
         # -------------------------------------------------
         shape = resolve_query_shape(draft)
         logger.info(f"[SHAPE] Resolved query shape: {shape}")
 
         # -------------------------------------------------
-        # 3. CONSTRUCT QueryRequest (HARD GATE)
+        # 4. CONSTRUCT QUERY REQUEST
         # -------------------------------------------------
         query = QueryRequest(**draft, shape=shape)
         logger.info(f"[ORCH] Constructed QueryRequest: {query}")
 
         # -------------------------------------------------
-        # 4. EXECUTE (BUILDER WILL CRASH IF INVALID)
+        # 5. SEMANTIC COMMIT (EXECUTION AUTHORITY)
+        # -------------------------------------------------
+        decision = semantic_commit(query, context=context)
+        logger.info(
+            f"[COMMIT] decision={decision.type} reason={decision.reason}"
+        )
+
+        if decision.type == CommitDecisionType.CLARIFY:
+            return NLPResponse(
+                user_id=user_id,
+                answer=decision.message
+                or "Could you clarify what you mean?",
+                query=query,
+                context={
+                    "commit_decision": "clarify",
+                    "reason": decision.reason,
+                },
+            )
+
+        if decision.type == CommitDecisionType.REJECT:
+            raise HTTPException(
+                status_code=400,
+                detail=decision.reason or "Query rejected",
+            )
+
+        # -------------------------------------------------
+        # 6. EXECUTE (DATA AUTHORITY)
         # -------------------------------------------------
         result: QueryResult = await run_query(prisma_db, query)
         logger.info(f"[ORCH] QueryResult: {result}")
 
-        has_rows = bool(result.rows)
-        has_aggregate = bool(result.aggregate_result)
-
         # -------------------------------------------------
-        # 5. AGGREGATE QUERIES
+        # 7. ANSWER (STRING ONLY)
         # -------------------------------------------------
-        if query.shape.is_aggregate():
-            if not has_aggregate:
-                logger.warning("[ORCH] Aggregate query returned no aggregate_result")
-                return create_safe_fallback_response(result, user_id, user_text)
-
-            raw = await answer_query(user_text, result, user_id)
-            answer = _normalize_answer(raw)
-
-            response = NLPResponse(
-                user_id=user_id,
-                answer=answer,
-                query=query,
-                output=result,
-            )
-
-            validate_query_response(result, response, user_text)
-            return response
-
-        # -------------------------------------------------
-        # 6. LIST / RANKING / DETAIL QUERIES
-        # -------------------------------------------------
-        if has_rows:
-            raw = await answer_query(user_text, result, user_id)
-            answer = _normalize_answer(raw)
-
-            response = NLPResponse(
-                user_id=user_id,
-                answer=answer,
-                query=query,
-                output=result,
-            )
-
-            validate_query_response(result, response, user_text)
-            return response
-
-        # -------------------------------------------------
-        # 7. EMPTY BUT VALID
-        # -------------------------------------------------
-        logger.info("[ORCH] No rows returned — safe fallback")
-        return create_safe_fallback_response(result, user_id, user_text)
-
-    # =====================================================
-    # 🔥 INVARIANT VIOLATIONS (CRASH LOUD, FAIL SOFT)
-    # =====================================================
-    except RuntimeError as e:
-        logger.exception("[ORCH][INVARIANT_VIOLATION] %s", e)
-
-        return NLPResponse(
-            user_id=user_id,
-            answer="I couldn’t process this request due to an internal consistency issue.",
-            context={
-                "error": "invariant_violation",
-                "message": str(e),
-            },
+        answer_text: str = await answer_query(
+            user_text,
+            result,
+            user_id,
         )
 
+        response = NLPResponse(
+            user_id=user_id,
+            answer=answer_text,
+            query=query,
+            output=result,
+        )
+
+        # -------------------------------------------------
+        # 8. VALIDATE ANSWER ↔ DATA
+        # -------------------------------------------------
+        validate_query_response(result, response, user_text)
+
+        return response
+
     # =====================================================
-    # 🚨 UNEXPECTED BUGS
+    # HTTP / SEMANTIC ERRORS
+    # =====================================================
+    except HTTPException:
+        raise
+
+    # =====================================================
+    # FAIL-SAFE (NEVER BREAK USER)
     # =====================================================
     except Exception as e:
         logger.exception("[ORCH][UNEXPECTED_ERROR] %s", e)
@@ -169,6 +150,6 @@ async def handle_user_query(
             answer="Something went wrong while processing your request. Please try again.",
             context={
                 "error": "unexpected_error",
-                "type": type(e).__name__,
+                "source": "query_orchestrator",
             },
         )
