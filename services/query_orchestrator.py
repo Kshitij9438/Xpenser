@@ -17,6 +17,10 @@ from services.query_validator import (
     create_safe_fallback_response,
 )
 from services.query_semantic_validator import validate_query_semantics
+from services.semantic_commit import (
+    semantic_commit,
+    CommitDecisionType,
+)
 
 # ---------------------------------------------------------------------
 # Logging
@@ -42,6 +46,7 @@ async def handle_user_query(
     Orchestrates the full deterministic query lifecycle.
 
     GUARANTEES:
+    - DB execution only occurs after semantic commit
     - answer_query returns STRING ONLY
     - NLPResponse is constructed exactly once
     - Data ↔ answer consistency enforced
@@ -57,7 +62,7 @@ async def handle_user_query(
         logger.info(f"[ORCH] Parsed QueryDraft: {draft}")
 
         # -------------------------------------------------
-        # 2. SEMANTIC INVARIANTS
+        # 2. SEMANTIC INVARIANTS (STRUCTURAL)
         # -------------------------------------------------
         validate_query_semantics(draft)
 
@@ -74,13 +79,39 @@ async def handle_user_query(
         logger.info(f"[ORCH] Constructed QueryRequest: {query}")
 
         # -------------------------------------------------
-        # 5. EXECUTE (DATA AUTHORITY)
+        # 5. SEMANTIC COMMIT (EXECUTION AUTHORITY)
+        # -------------------------------------------------
+        decision = semantic_commit(query, context=context)
+        logger.info(
+            f"[COMMIT] decision={decision.type} reason={decision.reason}"
+        )
+
+        if decision.type == CommitDecisionType.CLARIFY:
+            return NLPResponse(
+                user_id=user_id,
+                answer=decision.message
+                or "Could you clarify what you mean?",
+                query=query,
+                context={
+                    "commit_decision": "clarify",
+                    "reason": decision.reason,
+                },
+            )
+
+        if decision.type == CommitDecisionType.REJECT:
+            raise HTTPException(
+                status_code=400,
+                detail=decision.reason or "Query rejected",
+            )
+
+        # -------------------------------------------------
+        # 6. EXECUTE (DATA AUTHORITY)
         # -------------------------------------------------
         result: QueryResult = await run_query(prisma_db, query)
         logger.info(f"[ORCH] QueryResult: {result}")
 
         # -------------------------------------------------
-        # 6. ANSWER (STRING ONLY)
+        # 7. ANSWER (STRING ONLY)
         # -------------------------------------------------
         answer_text: str = await answer_query(
             user_text,
@@ -96,7 +127,7 @@ async def handle_user_query(
         )
 
         # -------------------------------------------------
-        # 7. VALIDATE ANSWER ↔ DATA
+        # 8. VALIDATE ANSWER ↔ DATA
         # -------------------------------------------------
         validate_query_response(result, response, user_text)
 
