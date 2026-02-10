@@ -2,13 +2,13 @@
 import logging
 import json
 from typing import Any, Dict
+from asyncio import Lock
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from asyncio import Lock
 
-from configurations.config import DATABASE_URL, DEBUG
+from configurations.config import DATABASE_URL
 from services.router import get_route
 from prisma import Prisma
 
@@ -19,7 +19,7 @@ from executors.conversation import ConversationExecutor
 
 
 # -----------------------------
-# Route → Intent mapping (SINGLE SOURCE OF TRUTH)
+# Route → Intent mapping
 # -----------------------------
 ROUTE_TO_INTENT = {
     1: "expense",
@@ -27,8 +27,9 @@ ROUTE_TO_INTENT = {
     3: "conversation",
 }
 
+
 # -----------------------------
-# Structured Logging Setup
+# Logging
 # -----------------------------
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
@@ -50,22 +51,30 @@ handler.setFormatter(JSONFormatter())
 if not logger.handlers:
     logger.addHandler(handler)
 
+
 # -----------------------------
-# FastAPI App
+# FastAPI
 # -----------------------------
 app = FastAPI(title="Expense Chatbot API", version="2.0")
 
+
 # -----------------------------
-# Prisma + Executors
+# Prisma (SINGLE CLIENT)
 # -----------------------------
 db = Prisma()
+db_lock = Lock()
 
+DB_CONNECTED = False
+DB_ERROR: str | None = None
+
+
+# -----------------------------
+# Executors
+# -----------------------------
 expense_executor: ExpenseExecutor | None = None
 query_executor: QueryExecutor | None = None
 conversation_executor: ConversationExecutor | None = None
 
-DB_CONNECTED: bool = False
-DB_ERROR: str | None = None
 
 # -----------------------------
 # Metrics
@@ -79,54 +88,71 @@ request_counters = {
     "errors": 0,
 }
 
+
 # -----------------------------
-# Pydantic Models
+# Models
 # -----------------------------
 class UserRequest(BaseModel):
     text: str
     user_id: str
+
+
+# -----------------------------
+# DB helper (THE FIX)
+# -----------------------------
+async def ensure_db_connected() -> None:
+    """
+    Lazily connect Prisma.
+    Safe under concurrency.
+    """
+    global DB_CONNECTED, DB_ERROR
+
+    if db.is_connected():
+        return
+
+    async with db_lock:
+        if db.is_connected():
+            return
+
+        try:
+            await db.connect()
+            DB_CONNECTED = True
+            DB_ERROR = None
+            logger.info("✅ Prisma DB connected")
+        except Exception as e:
+            DB_CONNECTED = False
+            DB_ERROR = str(e)
+            logger.exception("❌ Prisma DB connection failed")
+            raise HTTPException(status_code=503, detail="Database unavailable")
+
 
 # -----------------------------
 # Startup / Shutdown
 # -----------------------------
 @app.on_event("startup")
 async def startup():
-    global DB_CONNECTED, DB_ERROR
     global expense_executor, query_executor, conversation_executor
 
+    # ❗ DO NOT CONNECT DB HERE
+    expense_executor = ExpenseExecutor()
+    query_executor = QueryExecutor(db)
+    conversation_executor = ConversationExecutor()
+
     if not DATABASE_URL:
-        logger.warning("DATABASE_URL not set; DB functionality disabled.")
-        DB_CONNECTED = False
-        DB_ERROR = "DATABASE_URL not set"
-        return
-
-    try:
-        await db.connect()
-        DB_CONNECTED = True
-        DB_ERROR = None
-        logger.info("✅ Prisma DB connected")
-
-        expense_executor = ExpenseExecutor()
-        query_executor = QueryExecutor(db)
-        conversation_executor = ConversationExecutor()
-
-    except Exception:
-        DB_CONNECTED = False
-        logger.exception("❌ Failed to connect Prisma DB")
-        if DEBUG:
-            raise
+        logger.warning("DATABASE_URL not set; DB disabled")
 
 
 @app.on_event("shutdown")
 async def shutdown():
     global DB_CONNECTED
-    if DB_CONNECTED:
+    if db.is_connected():
         await db.disconnect()
         DB_CONNECTED = False
         logger.info("✅ Prisma DB disconnected")
 
+
 # -----------------------------
-# API Endpoints
+# Routes
 # -----------------------------
 @app.get("/")
 async def root():
@@ -135,10 +161,10 @@ async def root():
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    info = {"status": "ok", "db_connected": DB_CONNECTED}
+    payload = {"status": "ok", "db_connected": DB_CONNECTED}
     if DB_ERROR:
-        info["db_error"] = DB_ERROR
-    return info
+        payload["db_error"] = DB_ERROR
+    return payload
 
 
 @app.get("/metrics")
@@ -157,15 +183,9 @@ async def process_request(request: UserRequest):
             f"[REQUEST_START] user_id={request.user_id}, text_length={len(request.text)}"
         )
 
-        # -----------------
-        # Routing
-        # -----------------
         route_result = await get_route(request.text)
         route = route_result.route
 
-        # -----------------
-        # Intent
-        # -----------------
         intent = Intent(
             user_id=request.user_id,
             raw_input=request.text,
@@ -173,70 +193,48 @@ async def process_request(request: UserRequest):
         )
 
         logger.info(
-            f"[INTENT] user_id={intent.user_id}, "
-            f"type={intent.type}, text='{intent.raw_input[:100]}...'"
+            f"[INTENT] user_id={intent.user_id}, type={intent.type}"
         )
 
-        # -----------------
-        # Execution
-        # -----------------
         if intent.type == "expense":
-            response = await expense_executor.execute(intent)
             async with metrics_lock:
                 request_counters["expense"] += 1
-            return response
+            return await expense_executor.execute(intent)
 
         elif intent.type == "query":
-            if not DB_CONNECTED:
-                raise HTTPException(status_code=503, detail="Query unavailable")
-
-            response = await query_executor.execute(intent)
+            await ensure_db_connected()
             async with metrics_lock:
                 request_counters["query"] += 1
-            return response
+            return await query_executor.execute(intent)
 
         else:
-            response = await conversation_executor.execute(intent)
             async with metrics_lock:
                 request_counters["unknown"] += 1
-            return response
+            return await conversation_executor.execute(intent)
 
-    # -----------------------------
-    # FAILURE ENVELOPES (FIXED)
-    # -----------------------------
     except HTTPException as e:
         async with metrics_lock:
             request_counters["errors"] += 1
 
         logger.warning(
-            f"[HTTP_ERROR] user_id={request.user_id}, status={e.status_code}, detail={e.detail}"
+            f"[HTTP_ERROR] user_id={request.user_id}, status={e.status_code}"
         )
 
-        # ✅ Preserve domain errors EXACTLY as raised
-        if isinstance(e.detail, dict) and "error" in e.detail:
-            return JSONResponse(
-                status_code=e.status_code,
-                content=e.detail,
-            )
-
-        # ❌ Wrap only generic HTTP errors
         return JSONResponse(
             status_code=e.status_code,
             content={
                 "error": {
                     "type": "http_error",
-                    "message": e.detail if isinstance(e.detail, str) else str(e.detail),
+                    "message": e.detail,
                 }
             },
         )
 
-    except Exception as e:
+    except Exception:
         async with metrics_lock:
             request_counters["errors"] += 1
 
-        logger.exception(
-            f"[UNHANDLED_ERROR] user_id={request.user_id}, exception={e}"
-        )
+        logger.exception("[UNHANDLED_ERROR]")
 
         return JSONResponse(
             status_code=500,
@@ -252,9 +250,13 @@ async def process_request(request: UserRequest):
 # -----------------------------
 # Entrypoint
 # -----------------------------
-import os
-import uvicorn
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, workers=1)
+    import uvicorn
+    import os
+
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 8000)),
+        workers=1,
+    )

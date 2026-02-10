@@ -1,25 +1,17 @@
 #!/bin/bash
-
-# Exit on any error
 set -e
 
-echo "🚀 Starting Expense Chatbot..."
+echo "🚀 Starting Xpenser API..."
 
-# Set default port if not provided
 PORT=${PORT:-8000}
 
-# Wait for database to be ready (if using external DB)
+# Optional: log DB presence
 if [ -n "$DATABASE_URL" ]; then
-    echo "📊 Waiting for database connection..."
-    # You can add database health check here if needed
+    echo "📊 DATABASE_URL detected"
 fi
 
-# Run database migrations (if any)
-if [ -n "$DATABASE_URL" ]; then
-    echo "🗄️ Running database migrations..."
-    prisma db push --accept-data-loss || echo "⚠️ Migration failed, continuing..."
-fi
+# ⚠️ Do NOT auto-run prisma db push in production
+# Run migrations manually when needed
 
-# Start the application
 echo "🌟 Starting FastAPI server on port $PORT..."
-exec uvicorn app:app --host 0.0.0.0 --port $PORT
+exec uvicorn API_LAYER.app:app --host 0.0.0.0 --port $PORT
