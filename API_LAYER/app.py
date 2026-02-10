@@ -230,11 +230,11 @@ async def process_request(request: UserRequest):
             },
         )
 
-    except Exception:
+    except Exception as e:
         async with metrics_lock:
             request_counters["errors"] += 1
 
-        logger.exception("[UNHANDLED_ERROR]")
+        logger.exception(f"[UNHANDLED_ERROR] {type(e).__name__}: {e}")  
 
         return JSONResponse(
             status_code=500,
