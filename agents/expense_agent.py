@@ -1,11 +1,15 @@
 import json
+from datetime import datetime
+
 from pydantic_ai import Agent
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
+
 from models.expense import Expenses
 from configurations.config import GOOGLE_API_KEY
-from datetime import datetime
 from configurations.config import GEMINI_MODEL_NAME
+
+
 # -----------------------------
 # Expense Extraction Agent
 # -----------------------------
@@ -49,7 +53,8 @@ expense_agent = Agent(
         "}\n\n"
         "IMPORTANT: Be thorough and accurate. Extract ALL companions mentioned. Create meaningful descriptions. Choose appropriate categories and subcategories. Return ONLY valid JSON."
     ),
-    output_type=Expenses
+    output_type=Expenses,
+    retries=2,
 )
 
 # -----------------------------
@@ -71,58 +76,41 @@ message_agent = Agent(
     - Sprinkle in cheerful emojis (food, money, celebration, etc.)
     - End with a positive or fun closing remark
     - Do not ask for JSON or input; just generate the message""",
-    output_type=str
+    output_type=str,
+    retries=1,
 )
 
 # -----------------------------
 # Expense Parsing Function
 # -----------------------------
 async def generate_expense_message(expense: Expenses) -> str:
-    """
-    Forward the expense JSON to message_agent to generate a friendly message.
-    """
-    # Convert Pydantic model to dict
     expense_dict = expense.model_dump()
 
-    # Convert datetime to ISO string for JSON serialization
     if isinstance(expense_dict.get("date"), datetime):
         expense_dict["date"] = expense_dict["date"].isoformat()
 
-    # Serialize to JSON string
     expense_json_str = json.dumps(expense_dict)
 
-    # Run the message agent with JSON string
     result = await message_agent.run(expense_json_str)
-    
-    # Extract just the output string from the agent result
-    if hasattr(result, 'output'):
-        return result.output
-    else:
-        return str(result)
+    return result.output if hasattr(result, "output") else str(result)
+
 
 # -----------------------------
 # Unified Expense Handling
 # -----------------------------
 async def parse_and_generate_message(user_input: str) -> dict:
-    """
-    Parse user input to structured expense JSON and generate user-friendly message.
-    Returns a dict with both.
-    """
     try:
-        # Extract structured JSON
         result = await expense_agent.run(user_input)
         expense_data: Expenses = result.output
 
-        # Generate natural message
-        user_message: str = await generate_expense_message(expense_data)
+        user_message = await generate_expense_message(expense_data)
 
         return {
             "expense_data": expense_data,
-            "user_message": user_message
+            "user_message": user_message,
         }
-    except Exception as e:
-        # Fallback: create a basic expense structure
-        from datetime import datetime
+
+    except Exception:
         fallback_expense = Expenses(
             amount=0.0,
             date=datetime.now(),
@@ -130,10 +118,12 @@ async def parse_and_generate_message(user_input: str) -> dict:
             description=user_input,
             category="Other",
             subcategory="Unknown",
-            paymentMethod=None
+            paymentMethod=None,
         )
-        
+
         return {
             "expense_data": fallback_expense,
-            "user_message": f"I had trouble parsing that expense: {user_input}. Please try rephrasing it."
+            "user_message": (
+                "I had trouble parsing that expense. Please try rephrasing it."
+            ),
         }

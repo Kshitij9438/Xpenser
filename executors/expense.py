@@ -16,7 +16,7 @@ class ExpenseExecutor(BaseExecutor):
     async def execute(self, intent: Intent) -> dict:
         try:
             try:
-                result = await wait_for(parse_expense(intent.raw_input), timeout=30)
+                result = await wait_for(parse_expense(intent.raw_input), timeout=60)
             except TimeoutError:
                 raise HTTPException(status_code=504, detail="Expense parsing timed out")
 

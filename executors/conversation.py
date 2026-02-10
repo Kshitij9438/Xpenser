@@ -18,7 +18,7 @@ class ConversationExecutor(BaseExecutor):
             try:
                 conversation_result = await wait_for(
                     handle_conversation(intent.raw_input, intent.user_id),
-                    timeout=30,
+                    timeout=45,
                 )
             except TimeoutError:
                 raise HTTPException(
