@@ -8,7 +8,9 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PRISMA_CLIENT_ENGINE_TYPE=binary
+
 
 # Install system dependencies + Node (for Prisma)
 RUN apt-get update && apt-get install -y \
