@@ -16,7 +16,8 @@ from core.intent import Intent
 from executors.expense import ExpenseExecutor
 from executors.query import QueryExecutor
 from executors.conversation import ConversationExecutor
-
+import socket
+from urllib.parse import urlparse
 
 # -----------------------------
 # Route → Intent mapping
@@ -120,6 +121,18 @@ async def startup():
         return
 
     try:
+        parsed = urlparse(DATABASE_URL)
+
+        host = parsed.hostname
+        port = parsed.port or 5432
+
+        logger.error(f"🔎 Testing TCP to {host}:{port}")
+
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                logger.error("✅ TCP connection to Postgres succeeded")
+        except Exception as e:
+            logger.error(f"❌ TCP connection failed: {repr(e)}")
         await db.connect()
         DB_CONNECTED = True
         DB_ERROR = None
