@@ -9,7 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PRISMA_CLIENT_ENGINE_TYPE=binary
+    PRISMA_CLIENT_ENGINE_TYPE=binary \
+    PRISMA_CACHE_DIR=/app/.prisma-cache
 
 
 # Install system dependencies + Node (for Prisma)
@@ -44,10 +45,8 @@ RUN chmod +x start.sh
 RUN useradd --create-home --shell /bin/bash app \
     && chown -R app:app /app
 
-# Fix cache permissions
-RUN mkdir -p /root/.cache && \
-    chown -R app:app /root/.cache && \
-    chmod -R 755 /root/.cache
+# 🔑 Create Prisma cache directory owned by app
+RUN mkdir -p /app/.prisma-cache && chown -R app:app /app/.prisma-cache
 
 # Fix Prisma permissions (version-agnostic)
 RUN find /usr/local/lib -path "*prisma*" -type d -exec chown -R app:app {} \; 2>/dev/null || true
