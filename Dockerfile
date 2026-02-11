@@ -24,26 +24,26 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Pre-generate schema (this will be regenerated in start.sh with actual DATABASE_URL)
-RUN prisma generate || true
+# Generate Prisma as ROOT (before switching users)
+RUN prisma generate
 
 RUN chmod +x start.sh
 
-# Create user BEFORE setting permissions
+# Create user
 RUN useradd --create-home --shell /bin/bash app
 
-# Create and set permissions for Prisma cache
+# Create and set permissions
 RUN mkdir -p /app/.prisma-cache && \
     chmod 755 /app/.prisma-cache
 
-# 🔥 CRITICAL: Give ownership to app user for all necessary directories
+# Give ownership to app user for application files only
 RUN chown -R app:app /app
+
+# 🔥 CRITICAL FIX: Give app user write access to Prisma package
+RUN chmod -R 777 /usr/local/lib/python3.11/site-packages/prisma
 
 # Switch to non-root user
 USER app
-
-# Ensure Prisma binaries are executable
-RUN find ~/.cache -name "prisma-*" -type f -exec chmod +x {} \; 2>/dev/null || true
 
 EXPOSE 8000
 
