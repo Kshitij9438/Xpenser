@@ -62,7 +62,6 @@ app = FastAPI(title="Expense Chatbot API", version="2.0")
 # Prisma (SINGLE CLIENT)
 # -----------------------------
 db = Prisma()
-db_lock = Lock()
 
 DB_CONNECTED = False
 DB_ERROR: str | None = None
@@ -98,48 +97,37 @@ class UserRequest(BaseModel):
 
 
 # -----------------------------
-# DB helper (THE FIX)
-# -----------------------------
-async def ensure_db_connected() -> None:
-    """
-    Lazily connect Prisma.
-    Safe under concurrency.
-    """
-    global DB_CONNECTED, DB_ERROR
-
-    if db.is_connected():
-        return
-
-    async with db_lock:
-        if db.is_connected():
-            return
-
-        try:
-            await db.connect()
-            DB_CONNECTED = True
-            DB_ERROR = None
-            logger.info("✅ Prisma DB connected")
-        except Exception as e:
-            DB_CONNECTED = False
-            DB_ERROR = str(e)
-            logger.exception("❌ Prisma DB connection failed")
-            raise HTTPException(status_code=503, detail="Database unavailable")
-
-
-# -----------------------------
 # Startup / Shutdown
 # -----------------------------
 @app.on_event("startup")
 async def startup():
+    """
+    IMPORTANT:
+    - Prisma MUST connect here (once)
+    - Never connect inside request flow
+    """
     global expense_executor, query_executor, conversation_executor
+    global DB_CONNECTED, DB_ERROR
 
-    # ❗ DO NOT CONNECT DB HERE
     expense_executor = ExpenseExecutor()
     query_executor = QueryExecutor(db)
     conversation_executor = ConversationExecutor()
 
     if not DATABASE_URL:
         logger.warning("DATABASE_URL not set; DB disabled")
+        DB_CONNECTED = False
+        DB_ERROR = "DATABASE_URL not set"
+        return
+
+    try:
+        await db.connect()
+        DB_CONNECTED = True
+        DB_ERROR = None
+        logger.info("✅ Prisma DB connected at startup")
+    except Exception as e:
+        DB_CONNECTED = False
+        DB_ERROR = str(e)
+        logger.exception("❌ Prisma DB connection failed at startup")
 
 
 @app.on_event("shutdown")
@@ -161,7 +149,10 @@ async def root():
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    payload = {"status": "ok", "db_connected": DB_CONNECTED}
+    payload = {
+        "status": "ok" if DB_CONNECTED else "degraded",
+        "db_connected": DB_CONNECTED,
+    }
     if DB_ERROR:
         payload["db_error"] = DB_ERROR
     return payload
@@ -202,9 +193,15 @@ async def process_request(request: UserRequest):
             return await expense_executor.execute(intent)
 
         elif intent.type == "query":
-            await ensure_db_connected()
+            if not DB_CONNECTED:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Database unavailable",
+                )
+
             async with metrics_lock:
                 request_counters["query"] += 1
+
             return await query_executor.execute(intent)
 
         else:
@@ -234,7 +231,7 @@ async def process_request(request: UserRequest):
         async with metrics_lock:
             request_counters["errors"] += 1
 
-        logger.exception(f"[UNHANDLED_ERROR] {type(e).__name__}: {e}")  
+        logger.exception(f"[UNHANDLED_ERROR] {type(e).__name__}: {e}")
 
         return JSONResponse(
             status_code=500,
