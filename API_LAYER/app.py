@@ -3,6 +3,8 @@ import logging
 import json
 from typing import Any, Dict
 from asyncio import Lock
+import socket
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -16,8 +18,7 @@ from core.intent import Intent
 from executors.expense import ExpenseExecutor
 from executors.query import QueryExecutor
 from executors.conversation import ConversationExecutor
-import socket
-from urllib.parse import urlparse
+
 
 # -----------------------------
 # Route → Intent mapping
@@ -63,6 +64,7 @@ app = FastAPI(title="Expense Chatbot API", version="2.0")
 # Prisma (SINGLE CLIENT)
 # -----------------------------
 db = Prisma()
+db_lock = Lock()
 
 DB_CONNECTED = False
 DB_ERROR: str | None = None
@@ -98,14 +100,43 @@ class UserRequest(BaseModel):
 
 
 # -----------------------------
+# DB helper (LAZY + SAFE)
+# -----------------------------
+async def ensure_db_connected() -> None:
+    """
+    Lazily connect Prisma.
+    This is the ONLY place DB connections are allowed.
+    """
+    global DB_CONNECTED, DB_ERROR
+
+    if db.is_connected():
+        return
+
+    async with db_lock:
+        if db.is_connected():
+            return
+
+        try:
+            await db.connect()
+            DB_CONNECTED = True
+            DB_ERROR = None
+            logger.info("✅ Prisma DB connected")
+        except Exception as e:
+            DB_CONNECTED = False
+            DB_ERROR = str(e)
+            logger.exception("❌ Prisma DB connection failed")
+            raise HTTPException(status_code=503, detail="Database unavailable")
+
+
+# -----------------------------
 # Startup / Shutdown
 # -----------------------------
 @app.on_event("startup")
 async def startup():
     """
     IMPORTANT:
-    - Prisma MUST connect here (once)
-    - Never connect inside request flow
+    - DO NOT connect Prisma here
+    - Startup must never fail due to DB
     """
     global expense_executor, query_executor, conversation_executor
     global DB_CONNECTED, DB_ERROR
@@ -114,33 +145,27 @@ async def startup():
     query_executor = QueryExecutor(db)
     conversation_executor = ConversationExecutor()
 
+    DB_CONNECTED = False
+    DB_ERROR = None
+
     if not DATABASE_URL:
         logger.warning("DATABASE_URL not set; DB disabled")
-        DB_CONNECTED = False
         DB_ERROR = "DATABASE_URL not set"
         return
 
+    # Non-fatal TCP diagnostic (visibility only)
     try:
         parsed = urlparse(DATABASE_URL)
-
         host = parsed.hostname
         port = parsed.port or 5432
 
-        logger.error(f"🔎 Testing TCP to {host}:{port}")
-
-        try:
-            with socket.create_connection((host, port), timeout=5):
-                logger.error("✅ TCP connection to Postgres succeeded")
-        except Exception as e:
-            logger.error(f"❌ TCP connection failed: {repr(e)}")
-        await db.connect()
-        DB_CONNECTED = True
-        DB_ERROR = None
-        logger.info("✅ Prisma DB connected at startup")
+        logger.info(f"🔎 Testing TCP to {host}:{port}")
+        with socket.create_connection((host, port), timeout=5):
+            logger.info("✅ TCP connection to Postgres succeeded")
     except Exception as e:
-        DB_CONNECTED = False
-        DB_ERROR = str(e)
-        logger.exception("❌ Prisma DB connection failed at startup")
+        logger.warning(f"⚠️ TCP check failed: {repr(e)}")
+
+    logger.info("🚀 Application startup complete")
 
 
 @app.on_event("shutdown")
@@ -196,9 +221,7 @@ async def process_request(request: UserRequest):
             type=ROUTE_TO_INTENT.get(route, "conversation"),
         )
 
-        logger.info(
-            f"[INTENT] user_id={intent.user_id}, type={intent.type}"
-        )
+        logger.info(f"[INTENT] user_id={intent.user_id}, type={intent.type}")
 
         if intent.type == "expense":
             async with metrics_lock:
@@ -206,11 +229,7 @@ async def process_request(request: UserRequest):
             return await expense_executor.execute(intent)
 
         elif intent.type == "query":
-            if not DB_CONNECTED:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Database unavailable",
-                )
+            await ensure_db_connected()
 
             async with metrics_lock:
                 request_counters["query"] += 1
